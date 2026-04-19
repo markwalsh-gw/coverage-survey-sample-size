@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bayesian sample size for coverage surveys</title>
+<style>
+  :root {
+    --bg: #fafafa; --card: #fff; --border: #e5e7eb; --ink: #111;
+    --muted: #6b7280; --accent: #2563eb; --good: #059669; --warn: #b45309; --bad: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink); }
+  header { padding: 18px 28px; background: var(--card); border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0 0 4px; font-size: 18px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 800px; }
+  main { display: grid; grid-template-columns: 380px 1fr; gap: 20px; padding: 20px 28px; max-width: 1500px; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+  .card h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .field { display: flex; flex-direction: column; margin-bottom: 12px; }
+  .field label { font-weight: 500; margin-bottom: 4px; }
+  .field small { color: var(--muted); font-size: 12px; margin-bottom: 4px; line-height: 1.35; }
+  .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+  .row label { display: block; }
+  .row label small { display: block; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  input, select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; font: inherit; width: 100%; background: #fff; }
+  input[type="number"] { font-variant-numeric: tabular-nums; }
+  .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .result { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .result .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .result .val { font-size: 22px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  canvas { width: 100%; height: 260px; display: block; }
+  .plot { padding: 14px 12px 8px; }
+  .error { background: #fee; border: 1px solid #fbb; color: #900; padding: 10px; border-radius: 6px; margin-bottom: 12px; display: none; }
+  .busy { color: var(--muted); font-size: 12px; margin-left: 8px; display: none; }
+  footer { padding: 12px 28px; color: var(--muted); font-size: 12px; }
+  a { color: var(--accent); }
+  #hist-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 4px 6px; margin-top: 6px; }
+  #hist-grid label { font-size: 11px; color: var(--muted); }
+  #hist-grid input { padding: 3px 5px; font-size: 12px; }
+  #hist-total { font-weight: 600; margin-top: 8px; display: inline-block; }
+  .toggle { display: inline-flex; gap: 4px; }
+  .toggle button { padding: 4px 10px; border: 1px solid var(--border); background: #fff; cursor: pointer; font: inherit; border-radius: 4px; }
+  .toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bayesian sample size for coverage surveys</h1>
+  <p>Pick the sample size that maximizes value of information given your prior on coverage, the CEA decision threshold, and the budget consequences of scaling up vs. scaling down. Adapted from IDinsight's Nigeria CMAM VoI work — see <a href="docs/method.md">method notes</a> and <a href="docs/idinsight_method_notes.md">mapping to the source script</a>.</p>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>Prior on coverage</h2>
+      <div class="field">
+        <label>Mode</label>
+        <small>"Mean + CI" fits a Beta and discretizes into 20 bins. "Custom" lets you set bin probabilities directly.</small>
+        <select id="priorMode">
+          <option value="meanCI">Mean + 95% CI (Beta-fit)</option>
+          <option value="custom">Custom histogram</option>
+        </select>
+      </div>
+      <div id="meanCI-fields">
+        <div class="row">
+          <label><small>mean</small><input id="priorMean" type="number" step="0.01" min="0.001" max="0.999" value="0.30"></label>
+          <label><small>2.5%</small><input id="priorLo" type="number" step="0.01" min="0" max="0.999" value="0.10"></label>
+          <label><small>97.5%</small><input id="priorHi" type="number" step="0.01" min="0.001" max="1" value="0.55"></label>
+        </div>
+      </div>
+      <details>
+        <summary>Edit bin probabilities (% per 5pp bin)</summary>
+        <div id="hist-grid"></div>
+        <div id="hist-total">Σ = —</div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Decision</h2>
+      <div class="field">
+        <label for="pStar">Coverage threshold (p*)</label>
+        <small>Coverage above which you'd prefer to scale up the program.</small>
+        <input id="pStar" type="number" step="0.01" min="0" max="1" value="0.50">
+      </div>
+      <div class="field">
+        <label for="vUp">Value if scaled up — V<sub>up</sub> ($ per unit coverage)</small></label>
+        <small>How much net value you'd capture per 1.0-unit increase in coverage above threshold, under the larger (scale-up) budget. Order of magnitude is fine.</small>
+        <input id="vUp" type="number" step="1000000" min="0" value="100000000">
+      </div>
+      <div class="field">
+        <label for="vDown">Value if scaled down — V<sub>down</sub> ($ per unit coverage)</label>
+        <small>Same units as V<sub>up</sub>, but for the smaller (scale-down) budget. Lower than V<sub>up</sub>.</small>
+        <input id="vDown" type="number" step="1000000" min="0" value="20000000">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Survey costs &amp; sweep</h2>
+      <div class="row2">
+        <div class="field">
+          <label for="costPerInterview">Cost / interview ($)</label>
+          <input id="costPerInterview" type="number" step="1" min="0" value="200">
+        </div>
+        <div class="field">
+          <label for="fixedCost">Fixed survey cost ($)</label>
+          <input id="fixedCost" type="number" step="100" min="0" value="0">
+        </div>
+      </div>
+      <div class="field">
+        <label for="targetROI">Target marginal ROI (×)</label>
+        <small>Stop adding interviews once the next batch's value-per-dollar drops below this multiple. IDinsight uses 8.</small>
+        <input id="targetROI" type="number" step="0.5" min="0.1" value="8">
+      </div>
+      <div class="row">
+        <label><small>N min</small><input id="NMin" type="number" step="50" min="10" value="100"></label>
+        <label><small>N max</small><input id="NMax" type="number" step="500" min="100" value="5000"></label>
+        <label><small>step</small><input id="NStep" type="number" step="10" min="10" value="100"></label>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="M">MC sims / N</label>
+          <input id="M" type="number" step="1000" min="1000" value="20000">
+        </div>
+        <div class="field">
+          <label for="seed">Seed</label>
+          <input id="seed" type="number" step="1" value="40326">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="error" id="error"></div>
+
+    <div class="results">
+      <div class="result"><div class="lbl">Recommended N*</div><div class="val" id="res-nstar">—</div></div>
+      <div class="result"><div class="lbl">VoI at N*</div><div class="val" id="res-voi">—</div></div>
+      <div class="result"><div class="lbl">Marginal ROI at N*</div><div class="val" id="res-roi">—</div></div>
+      <div class="result"><div class="lbl">Survey cost at N*</div><div class="val" id="res-totalcost">—</div></div>
+    </div>
+
+    <div class="card plot"><canvas id="plot-prior"></canvas></div>
+    <div class="card plot"><canvas id="plot-voi"></canvas></div>
+    <div class="card plot"><canvas id="plot-roi"></canvas></div>
+
+    <p style="color:var(--muted);font-size:12px">
+      Computing<span class="busy" id="busy">…</span> in your browser. Inputs are encoded in this page's URL — copy the address to share a design.
+    </p>
+  </section>
+</main>
+
+<footer>
+  Built for GiveWell. Pure client-side — your inputs never leave your browser. Methodology adapted from IDinsight, Nigeria CMAM VoI analysis.
+</footer>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
