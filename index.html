@@ -18,6 +18,7 @@
   @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 14px; }
   .card h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .card h3 { margin: 14px 0 8px; font-size: 11px; font-weight: 600; color: var(--ink); letter-spacing: 0.02em; }
   .field { display: flex; flex-direction: column; margin-bottom: 12px; }
   .field label { font-weight: 500; margin-bottom: 4px; }
   .field small { color: var(--muted); font-size: 12px; margin-bottom: 4px; line-height: 1.35; }
@@ -41,17 +42,44 @@
   #hist-grid label { font-size: 11px; color: var(--muted); }
   #hist-grid input { padding: 3px 5px; font-size: 12px; }
   #hist-total { font-weight: 600; margin-top: 8px; display: inline-block; }
-  .toggle { display: inline-flex; gap: 4px; }
-  .toggle button { padding: 4px 10px; border: 1px solid var(--border); background: #fff; cursor: pointer; font: inherit; border-radius: 4px; }
-  .toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .derived { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; background: #f9fafb; border: 1px dashed var(--border); border-radius: 6px; padding: 8px 10px; margin-top: 6px; }
+  .derived .item { font-size: 12px; }
+  .derived .item .lbl { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .derived .item .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .explainer { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin: 16px 28px 0; max-width: 1440px; }
+  .explainer summary { font-weight: 600; color: var(--ink); cursor: pointer; font-size: 13px; }
+  .explainer[open] summary { margin-bottom: 10px; }
+  .explainer p { margin: 8px 0; color: #333; max-width: 900px; }
+  .explainer p strong { color: var(--ink); }
+  .explainer h4 { margin: 14px 0 4px; font-size: 13px; color: var(--ink); }
 </style>
 </head>
 <body>
 <header>
   <h1>Bayesian sample size for coverage surveys</h1>
-  <p>Pick the sample size that maximizes value of information given your prior on coverage, the CEA decision threshold, and the budget consequences of scaling up vs. scaling down. Adapted from IDinsight's Nigeria CMAM VoI work — see <a href="docs/method.md">method notes</a> and <a href="docs/idinsight_method_notes.md">mapping to the source script</a>.</p>
+  <p>Pick the sample size that maximizes value of information given your prior on coverage, the cost-effectiveness math, and the funding consequences of scaling up vs. scaling down. Adapted from IDinsight's Nigeria CMAM VoI work — see <a href="docs/method.md">method notes</a> and <a href="docs/idinsight_method_notes.md">mapping to the source script</a>.</p>
 </header>
+
+<details class="explainer" open>
+  <summary>How this tool works — in plain English</summary>
+  <p><strong>The question:</strong> "If we run a coverage survey, how big should the sample be?" Each interview costs money; its value comes from helping GiveWell make a better funding decision. The right N is the one where the <em>next</em> interview's expected information value still pays for itself.</p>
+
+  <h4>What you tell the tool</h4>
+  <p><strong>Your prior</strong> — what you'd guess the program's coverage to be without any survey. Enter a best guess plus a 95% range, or draw a custom shape if your beliefs aren't bell-shaped.</p>
+  <p><strong>The cost-effectiveness math</strong> — how many people are eligible (caseload), how many would die untreated, how much treatment reduces that mortality, what GiveWell values a death averted at, and the two budgets at stake (scale-up vs. scale-down). The tool combines these into an implied coverage threshold <em>p*</em> above which scale-up wins, and per-unit-coverage values for each decision. Defaults are generic placeholders — swap in your program's numbers.</p>
+  <p><strong>The survey logistics</strong> — cost per interview, optional fixed setup cost, and how aggressive you want to be (the default "8× ROI" means each marginal dollar of survey cost must still buy at least eight dollars of expected decision value).</p>
+
+  <h4>What it computes</h4>
+  <p>The tool simulates 20,000 alternate worlds drawn from your prior. In each world the true coverage is fixed but unknown. The tool simulates running the survey at sample size N, updates GiveWell's belief about coverage with the survey result, simulates the funding decision (scale up if the updated belief crosses <em>p*</em>; else scale down), and tracks the value that decision creates. Averaging across worlds gives the <strong>expected value of the survey</strong> at that N.</p>
+  <p>It repeats for many N values (100, 200, 300, …) and reports the largest N at which the next batch of interviews still clears your ROI hurdle. That's your recommended sample size.</p>
+
+  <h4>Why Bayesian, not frequentist?</h4>
+  <p>Frequentist power calculations target statistical precision: "how big does N need to be to reject a null hypothesis 80% of the time?" Bayesian VoI targets <em>decision improvement</em>: "how big does N need to be for the survey to actually shift (or confirm) GiveWell's funding call, enough to pay for itself?" The second question is closer to what we usually care about when writing M&amp;E protocols.</p>
+
+  <h4>What this tool is not</h4>
+  <p>It's a design-stage sizing aid, not a full CEA. The simulation uses a simplified cost-effectiveness pipeline — one source of uncertainty (coverage), no auxiliary surveys, no caseload-inflation math. For the full IDinsight Nigeria CMAM setup, use the R script linked in <a href="docs/idinsight_method_notes.md">the method notes</a>.</p>
+</details>
 
 <main>
   <section>
@@ -80,21 +108,79 @@
     </div>
 
     <div class="card">
-      <h2>Decision</h2>
-      <div class="field">
-        <label for="pStar">Coverage threshold (p*)</label>
-        <small>Coverage above which you'd prefer to scale up the program.</small>
-        <input id="pStar" type="number" step="0.01" min="0" max="1" value="0.50">
+      <h2>Cost-effectiveness model</h2>
+
+      <h3>Eligible population &amp; program cost</h3>
+      <div class="row2">
+        <div class="field">
+          <label for="caseload">Eligible population (caseload)</label>
+          <small>Number of people the program could reach at full coverage.</small>
+          <input id="caseload" type="number" step="100" min="1" value="50000">
+        </div>
+        <div class="field">
+          <label for="annualBudget">Annual program budget ($)</label>
+          <small>Per-year cost used as the CE denominator.</small>
+          <input id="annualBudget" type="number" step="10000" min="1" value="1500000">
+        </div>
+      </div>
+
+      <h3>Mortality &amp; value</h3>
+      <div class="row2">
+        <div class="field">
+          <label for="untreatedMortality">Mortality if untreated</label>
+          <small>Probability a typical eligible person dies in the absence of treatment.</small>
+          <input id="untreatedMortality" type="number" step="0.005" min="0.0001" max="1" value="0.05">
+        </div>
+        <div class="field">
+          <label for="mortalityReduction">Mortality reduction</label>
+          <small>Proportion of those deaths averted by treatment.</small>
+          <input id="mortalityReduction" type="number" step="0.05" min="0.0001" max="1" value="0.50">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="valPerDeath">Value per death averted</label>
+          <small>In GiveWell's "units of value" (119 is the standard under-5 value).</small>
+          <input id="valPerDeath" type="number" step="1" min="0.01" value="119">
+        </div>
+        <div class="field">
+          <label for="gdValuePerDollar">GD value per $</label>
+          <small>Units of value per $ at GiveDirectly (0.003355 standard).</small>
+          <input id="gdValuePerDollar" type="number" step="0.0001" min="0.000001" value="0.003355">
+        </div>
+      </div>
+      <details>
+        <summary>Advanced — benefit adjustment</summary>
+        <div class="field">
+          <label for="benefitAdjustment">Benefit adjustment factor</label>
+          <small>Multiplier on mortality-only value to include morbidity benefits and any supplementary CEA adjustments. Default 1.0 (mortality only). IDinsight's HKI setup used ≈1.16.</small>
+          <input id="benefitAdjustment" type="number" step="0.01" min="0.001" value="1.0">
+        </div>
+      </details>
+
+      <h3>Funding decision</h3>
+      <div class="row2">
+        <div class="field">
+          <label for="budgetUp">Budget if scaled up ($, total)</label>
+          <small>Multi-year commitment under the larger budget scenario.</small>
+          <input id="budgetUp" type="number" step="100000" min="0" value="20000000">
+        </div>
+        <div class="field">
+          <label for="budgetDown">Budget if scaled down ($, total)</label>
+          <small>Commitment under the smaller budget scenario. Must be less than scale-up.</small>
+          <input id="budgetDown" type="number" step="100000" min="0" value="4000000">
+        </div>
       </div>
       <div class="field">
-        <label for="vUp">Value if scaled up — V<sub>up</sub> ($ per unit coverage)</small></label>
-        <small>How much net value you'd capture per 1.0-unit increase in coverage above threshold, under the larger (scale-up) budget. Order of magnitude is fine.</small>
-        <input id="vUp" type="number" step="1000000" min="0" value="100000000">
+        <label for="targetCashMultiple">Cash-CE bar (×)</label>
+        <small>Minimum cost-effectiveness (as a multiple of GiveDirectly) for the program to clear the bar. 8× is GiveWell's current bar.</small>
+        <input id="targetCashMultiple" type="number" step="0.5" min="0.1" value="8">
       </div>
-      <div class="field">
-        <label for="vDown">Value if scaled down — V<sub>down</sub> ($ per unit coverage)</label>
-        <small>Same units as V<sub>up</sub>, but for the smaller (scale-down) budget. Lower than V<sub>up</sub>.</small>
-        <input id="vDown" type="number" step="1000000" min="0" value="20000000">
+
+      <div class="derived">
+        <div class="item"><div class="lbl">implied p*</div><div class="val" id="derived-pstar">—</div></div>
+        <div class="item"><div class="lbl">V<sub>up</sub> ($ / unit)</div><div class="val" id="derived-vup">—</div></div>
+        <div class="item"><div class="lbl">V<sub>down</sub> ($ / unit)</div><div class="val" id="derived-vdown">—</div></div>
       </div>
     </div>
 

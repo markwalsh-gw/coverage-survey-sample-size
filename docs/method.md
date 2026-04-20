@@ -30,7 +30,54 @@ Sampling from the histogram: inverse-CDF on the bin probabilities, then uniform 
 
 with `V_up > V_down ≥ 0`. The Bayes-optimal decision under any posterior with mean μ is **scale_up iff μ ≥ p\***, because (V_up − V_down)·(μ − p*) > 0 there.
 
-`V_up`/`V_down` collapse IDinsight's full CEA pipeline (mortality rates × lives saved × $/death × budget × `gd_value_per_dollar`) into a single per-unit-coverage value for each budget scenario. The user enters them directly. Trade-off: less transparent than the full pipeline, but vastly fewer inputs.
+`V_up`, `V_down`, and `p*` are **derived** from the user-entered CEA pipeline — the user does not enter them directly. See [`src/cea.js`](../src/cea.js).
+
+### Deriving V_up, V_down, p* from the CEA pipeline
+
+Inputs (all user-entered; generic placeholder defaults in the UI):
+
+| Symbol | Field | Meaning |
+|---|---|---|
+| c | `caseload` | Eligible population (# at full coverage) |
+| m | `untreatedMortality` | Mortality rate if untreated |
+| r | `mortalityReduction` | Proportion of untreated deaths averted by treatment |
+| v_d | `valPerDeath` | Value per death averted, in GiveWell's units of value (119 standard) |
+| a | `benefitAdjustment` | Multiplier for non-mortality benefits + CEA adjustments (default 1.0) |
+| gd | `gdValuePerDollar` | Units of value per $ (GiveDirectly anchor; 0.003355 standard) |
+| A | `annualBudget` | Annual program cost |
+| B_up | `budgetUp` | Multi-year commitment under scale-up |
+| B_down | `budgetDown` | Multi-year commitment under scale-down |
+| t | `targetCashMultiple` | Cash-CE bar (8× default) |
+
+Pipeline (IDinsight `calculate_CE`, with coverage as the one stochastic input):
+
+```
+K              = c · m · r · v_d · a           [units of value per unit coverage]
+total_value(p) = K · p                          [units of value]
+value/$(p)     = K · p / A                      [value / $]
+cash_CE(p)    = value/$(p) / gd                 [× cash]
+```
+
+Utility under each decision (IDinsight Step 8):
+
+```
+U_d(p) = B_d · (cash_CE(p) − t) · gd
+       = (B_d / A) · K · p  −  B_d · t · gd     [units of value]
+```
+
+The slope w.r.t. `p` is converted from units of value to dollars (so [`voi.js`](../src/voi.js) can stay dollar-denominated) by dividing by `gd`:
+
+```
+V_d_$ = (B_d / A) · (K / gd)                    [$ per unit coverage]
+```
+
+The threshold `p*` is where U_up(p*) − U_down(p*) = 0, which (after the `B_up − B_down` factor cancels) reduces to:
+
+```
+p* = A · t · gd / K = A · t / (K / gd)           [dimensionless; must land in (0, 1)]
+```
+
+If the pipeline implies `p* ∉ (0, 1)` the tool errors out: either the CEA clears the bar at any coverage (no real decision) or can never clear it (the survey won't move the funding call).
 
 ### Survey
 
@@ -70,17 +117,18 @@ Sweep N on a regular grid (`N_min`, `N_step`, …, `N_max`). For each N:
 
 | Feature | IDinsight's R script | This tool |
 |---|---|---|
-| Decision payoff | `B × (CE − target) × gd_value_per_dollar`, with two budgets | `V × (p − p*)`, with two values folding budget × CE-translation × gd into a single per-unit constant |
+| Decision payoff | `B × (CE − target) × gd_value_per_dollar`, with two budgets | Same structure, derived inside the tool from the CEA pipeline inputs |
+| CEA pipeline | Full: SAM/MAM caseload, inflation adj., LGA pop, catchment proportion, two mortality rates, two mortality-reduction rates, mortality-benefits share, supplemental adjustments | Simplified: single caseload, single mortality rate, single mortality-reduction rate, one benefit-adjustment factor. Everything else collapsed |
 | Prior on coverage | Empirical histogram from a Google sheet | Same family (histogram), but seeded from a Beta(α,β) elicited from mean+CI by default |
 | Survey design | Single endline | Single endline |
 | Posterior update | Normal–Normal with precision weights | Same |
 | MC sims per N | 100,000 | 20,000 default (browser performance) |
 | Optimal-N rule | Largest N with marginal ROI ≥ 8x | Same |
-| Multiple stochastic inputs | Coverage *plus* SAM/MAM caseload, inflation adj., LGA pop, catchment proportion | Coverage only; everything else collapsed into V_up/V_down |
+| Multiple stochastic inputs | Coverage *plus* SAM/MAM caseload, inflation adj., LGA pop, catchment proportion | Coverage only; everything else treated as fixed |
 | Cost model | `fixed + marginal × N`, fitted from 4 historical cost points | Same form, user enters fixed and marginal directly |
 | Auxiliary data fusion | None (this tool intentionally excludes it; see CLAUDE.md) | None |
 
-The CEA-pipeline collapse is the biggest concession to simplicity. If you want the full mortality-rate / lives-averted detail, run IDinsight's R script with your inputs. This tool is for when you want a defensible N quickly, with order-of-magnitude inputs.
+The CEA-pipeline collapse (one caseload and one mortality pair instead of IDinsight's SAM/MAM split) is the biggest concession to simplicity. For programs where that split matters, run IDinsight's R script directly. This tool is for when you want a defensible N quickly, with order-of-magnitude CEA inputs.
 
 ## What this tool does NOT do (yet)
 

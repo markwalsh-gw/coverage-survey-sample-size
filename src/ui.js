@@ -7,10 +7,38 @@ export const N_BINS = 20;
 
 const SCALAR_FIELDS = [
   "priorMode", "priorMean", "priorLo", "priorHi",
-  "pStar", "vUp", "vDown",
+  // CEA inputs (replace pStar / vUp / vDown — those are now derived)
+  "caseload", "annualBudget",
+  "untreatedMortality", "mortalityReduction", "valPerDeath",
+  "benefitAdjustment", "gdValuePerDollar",
+  "budgetUp", "budgetDown", "targetCashMultiple",
+  // Survey logistics
   "costPerInterview", "fixedCost", "targetROI",
   "NMin", "NMax", "NStep", "M", "seed",
 ];
+
+const DEFAULTS = {
+  priorMode: "meanCI",
+  priorMean: 0.30,
+  priorLo: 0.10,
+  priorHi: 0.55,
+  // Generic placeholder CEA defaults (NOT calibrated to any specific program).
+  // Imply p* ≈ 0.27 with the listed prior, which gives a non-trivial decision.
+  caseload: 50000,
+  annualBudget: 1500000,
+  untreatedMortality: 0.05,
+  mortalityReduction: 0.50,
+  valPerDeath: 119,
+  benefitAdjustment: 1.0,
+  gdValuePerDollar: 0.003355,
+  budgetUp: 20000000,
+  budgetDown: 4000000,
+  targetCashMultiple: 8,
+  costPerInterview: 200,
+  fixedCost: 0,
+  targetROI: 8,
+  NMin: 100, NMax: 5000, NStep: 100, M: 20000, seed: 40326,
+};
 
 export function readForm() {
   const f = (id) => document.getElementById(id);
@@ -18,25 +46,11 @@ export function readForm() {
     const v = parseFloat(f(id).value);
     return Number.isFinite(v) ? v : dflt;
   };
-  const histProb = readHistogramProb();
-  return {
-    priorMode: f("priorMode").value, // "meanCI" | "custom"
-    priorMean: num("priorMean", 0.3),
-    priorLo: num("priorLo", 0.1),
-    priorHi: num("priorHi", 0.55),
-    histProb,
-    pStar: num("pStar", 0.5),
-    vUp: num("vUp", 1e8),
-    vDown: num("vDown", 2e7),
-    costPerInterview: num("costPerInterview", 200),
-    fixedCost: num("fixedCost", 0),
-    targetROI: num("targetROI", 8),
-    NMin: num("NMin", 100),
-    NMax: num("NMax", 5000),
-    NStep: num("NStep", 100),
-    M: num("M", 20000),
-    seed: num("seed", 40326),
-  };
+  const out = { histProb: readHistogramProb() };
+  for (const k of SCALAR_FIELDS) {
+    out[k] = k === "priorMode" ? f(k).value : num(k, DEFAULTS[k]);
+  }
+  return out;
 }
 
 export function writeForm(params) {
@@ -65,7 +79,6 @@ export function writeHistogramProb(probs) {
   updateHistogramTotal();
 }
 
-// Build a normalized histogram object from the form.
 export function getCurrentHistogram(params) {
   const bins = defaultHistogramBins(N_BINS);
   if (params.priorMode === "custom") {
@@ -73,7 +86,6 @@ export function getCurrentHistogram(params) {
     if (total <= 0) throw new Error("Custom prior probabilities sum to 0 — set at least one bin > 0.");
     return normalizeHistogram({ ...bins, prob: params.histProb });
   }
-  // Mean+CI mode: fit a Beta then discretize.
   const beta = priorFromMeanCI(params.priorMean, params.priorLo, params.priorHi);
   return histogramFromBeta(beta, bins);
 }
@@ -95,6 +107,13 @@ export function setResults({ nStar, voiAtNStar, totalCost, marginalROIAtNStar })
   set("res-roi", marginalROIAtNStar != null ? `${marginalROIAtNStar.toFixed(1)}x` : "—");
 }
 
+export function setDerivedDecision({ pStar, vUp, vDown }) {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set("derived-pstar", pStar != null ? pStar.toFixed(3) : "—");
+  set("derived-vup", fmtMoney(vUp));
+  set("derived-vdown", fmtMoney(vDown));
+}
+
 function fmtMoney(x) {
   if (x == null || !Number.isFinite(x)) return "—";
   const sign = x < 0 ? "−" : "";
@@ -105,7 +124,7 @@ function fmtMoney(x) {
   return `${sign}$${a.toFixed(2)}`;
 }
 
-// URL state — encodes histogram as "h=12.5,7.1,..." (one number per bin).
+// URL state
 export function paramsToQuery(params) {
   const q = new URLSearchParams();
   for (const k of SCALAR_FIELDS) q.set(k, String(params[k]));
