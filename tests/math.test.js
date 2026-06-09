@@ -126,5 +126,5 @@ test("makeNormalSampler is approximately N(0,1)", () => {
 
 test("mulberry32 is deterministic for a given seed", () => {
   const r1 = mulberry32(123), r2 = mulberry32(123);
-  for (let i = 0; i < 10; i++) close(r1(), r2(), 0);
+  for (let i = 0; i < 10; i++) assert.equal(r1(), r2());
 });
