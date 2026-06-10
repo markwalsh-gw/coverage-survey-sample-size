@@ -47,23 +47,35 @@
   .derived .item { font-size: 12px; }
   .derived .item .lbl { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
   .derived .item .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .derived .item .sub { color: var(--muted); font-size: 10px; margin-top: 2px; line-height: 1.3; }
   .explainer { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin: 16px 28px 0; max-width: 1440px; }
   .explainer summary { font-weight: 600; color: var(--ink); cursor: pointer; font-size: 13px; }
   .explainer[open] summary { margin-bottom: 10px; }
   .explainer p { margin: 8px 0; color: #333; max-width: 900px; }
   .explainer p strong { color: var(--ink); }
   .explainer h4 { margin: 14px 0 4px; font-size: 13px; color: var(--ink); }
+  .recommendation { border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; font-size: 14px; line-height: 1.5; border: 1px solid var(--border); background: var(--card); }
+  .recommendation.good { border-color: #a7f3d0; background: #ecfdf5; }
+  .recommendation.warn { border-color: #fcd34d; background: #fffbeb; }
+  .recommendation strong { font-size: 15px; }
+  .recommendation em { color: var(--muted); font-style: italic; }
+  .result .sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .preset-note { font-size: 12px; color: var(--warn); background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 8px 10px; margin-top: 8px; display: none; }
+  .preset-note.show { display: block; }
+  .field .hint { color: var(--muted); font-size: 12px; margin-bottom: 4px; line-height: 1.35; }
+  details.advanced summary { font-weight: 600; color: var(--ink); }
+  .plot-note { color: var(--muted); font-size: 12px; padding: 0 14px 10px; margin: -4px 0 0; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Bayesian sample size for coverage surveys</h1>
-  <p>Pick the sample size that maximizes value of information given your prior on coverage, the cost-effectiveness math, and the funding consequences of scaling up vs. scaling down. Adapted from IDinsight's Nigeria CMAM VoI work — see <a href="docs/method.md">method notes</a> and <a href="docs/idinsight_method_notes.md">mapping to the source script</a>.</p>
+  <h1>How big should our coverage survey be?</h1>
+  <p>This tool finds the survey size where the cost of one more interview just stops being worth the better funding decision it buys. New here? Start with the <a href="docs/guide.md"><strong>plain-language guide</strong></a>. For the math, see the <a href="docs/method.md">method notes</a> and <a href="docs/idinsight_method_notes.md">mapping to IDinsight's source script</a>.</p>
 </header>
 
 <details class="explainer" open>
-  <summary>How this tool works — in plain English</summary>
-  <p><strong>The question:</strong> "If we run a coverage survey, how big should the sample be?" Each interview costs money; its value comes from helping GiveWell make a better funding decision. The right N is the one where the <em>next</em> interview's expected information value still pays for itself.</p>
+  <summary>How this tool works — in plain English (or read the <a href="docs/guide.md">full guide</a>)</summary>
+  <p><strong>The trade-off:</strong> a bigger survey costs more, but a bigger survey also tells you more, and better information leads to better funding decisions. This tool puts both sides in the same units — dollars — so you can see exactly where they cross. It recommends the largest survey at which the <em>next</em> batch of interviews still buys more decision-value than it costs. Below that size, you are leaving information on the table; above it, you are overpaying for precision you will not act on.</p>
 
   <h4>What you tell the tool</h4>
   <p><strong>Your prior</strong> — what you'd guess the program's coverage to be without any survey. Enter a best guess plus a 95% range, or draw a custom shape if your beliefs aren't bell-shaped.</p>
@@ -84,31 +96,52 @@
 <main>
   <section>
     <div class="card">
-      <h2>Prior on coverage</h2>
+      <h2>Start from a program template</h2>
       <div class="field">
-        <label>Mode</label>
-        <small>"Mean + CI" fits a Beta and discretizes into 20 bins. "Custom" lets you set bin probabilities directly.</small>
+        <label for="preset">Program</label>
+        <div class="hint">Loads rough starting numbers for a typical program of this type, then <strong>replace every field below with your own</strong>. Templates are illustrative scaffolding, not GiveWell-endorsed figures.</div>
+        <select id="preset">
+          <option value="">— Custom (no template) —</option>
+          <option value="cmam">CMAM (acute malnutrition treatment)</option>
+          <option value="nets">Insecticide-treated nets (ITNs)</option>
+          <option value="smc">Seasonal malaria chemoprevention (SMC)</option>
+          <option value="vas">Vitamin A supplementation (VAS)</option>
+          <option value="vaccination">Routine childhood vaccination</option>
+          <option value="water">Safe water (chlorination)</option>
+        </select>
+        <div class="preset-note" id="preset-note">Template loaded with placeholder numbers. These are illustrative only — go through each field and enter your program's actual figures before trusting the result.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Prior on coverage</h2>
+      <div class="hint" style="margin-bottom:10px">Your best guess about the program's coverage <em>before</em> running the survey — what you would say today if someone asked.</div>
+      <div class="field">
+        <label for="priorMode">How do you want to enter it?</label>
+        <small>"Best guess + range" is easiest: give a central estimate and a low–high range you are 95% sure contains the truth. "Draw the shape" lets you set the probability by hand if your beliefs are lopsided or have two humps.</small>
         <select id="priorMode">
-          <option value="meanCI">Mean + 95% CI (Beta-fit)</option>
-          <option value="custom">Custom histogram</option>
+          <option value="meanCI">Best guess + 95% range</option>
+          <option value="custom">Draw the shape myself</option>
         </select>
       </div>
       <div id="meanCI-fields">
         <div class="row">
-          <label><small>mean</small><input id="priorMean" type="number" step="0.01" min="0.001" max="0.999" value="0.30"></label>
-          <label><small>2.5%</small><input id="priorLo" type="number" step="0.01" min="0" max="0.999" value="0.10"></label>
-          <label><small>97.5%</small><input id="priorHi" type="number" step="0.01" min="0.001" max="1" value="0.55"></label>
+          <label><small>best guess</small><input id="priorMean" type="number" step="0.01" min="0.001" max="0.999" value="0.30"></label>
+          <label><small>low (2.5%)</small><input id="priorLo" type="number" step="0.01" min="0" max="0.999" value="0.10"></label>
+          <label><small>high (97.5%)</small><input id="priorHi" type="number" step="0.01" min="0.001" max="1" value="0.55"></label>
         </div>
+        <div class="hint">Enter coverage as a proportion: 0.30 means 30%.</div>
       </div>
       <details>
-        <summary>Edit bin probabilities (% per 5pp bin)</summary>
+        <summary>Advanced: set the probability of each 5-point coverage band by hand</summary>
         <div id="hist-grid"></div>
         <div id="hist-total">Σ = —</div>
       </details>
     </div>
 
     <div class="card">
-      <h2>Cost-effectiveness model</h2>
+      <h2>The funding decision the survey informs</h2>
+      <div class="hint" style="margin-bottom:10px">These are your cost-effectiveness assumptions. The tool combines them to work out the <strong>coverage tipping point</strong> (shown at the bottom of this card): the coverage level above which scaling the program up beats scaling it down. The whole point of the survey is to learn which side of that line the truth is on.</div>
 
       <h3>Eligible population &amp; program cost</h3>
       <div class="row2">
@@ -177,61 +210,80 @@
         <input id="targetCashMultiple" type="number" step="0.5" min="0.1" value="8">
       </div>
 
+      <div class="hint" style="margin-top:14px;margin-bottom:2px">Worked out from the numbers above — you do not enter these:</div>
       <div class="derived">
-        <div class="item"><div class="lbl">implied p*</div><div class="val" id="derived-pstar">—</div></div>
-        <div class="item"><div class="lbl">V<sub>up</sub> ($ / unit)</div><div class="val" id="derived-vup">—</div></div>
-        <div class="item"><div class="lbl">V<sub>down</sub> ($ / unit)</div><div class="val" id="derived-vdown">—</div></div>
+        <div class="item"><div class="lbl">Coverage tipping point</div><div class="val" id="derived-pstar">—</div><div class="sub">scale up if true coverage is above this (p*)</div></div>
+        <div class="item"><div class="lbl">Value of +1pp coverage, scaled up</div><div class="val" id="derived-vup">—</div><div class="sub">per percentage point (V<sub>up</sub>)</div></div>
+        <div class="item"><div class="lbl">Value of +1pp coverage, scaled down</div><div class="val" id="derived-vdown">—</div><div class="sub">per percentage point (V<sub>down</sub>)</div></div>
       </div>
     </div>
 
     <div class="card">
-      <h2>Survey costs &amp; sweep</h2>
+      <h2>Survey cost &amp; how much value you demand</h2>
       <div class="row2">
         <div class="field">
-          <label for="costPerInterview">Cost / interview ($)</label>
+          <label for="costPerInterview">Cost per interview ($)</label>
+          <small>All-in cost of one completed interview (enumerator time, travel, etc.).</small>
           <input id="costPerInterview" type="number" step="1" min="0" value="200">
         </div>
         <div class="field">
           <label for="fixedCost">Fixed survey cost ($)</label>
+          <small>One-off setup costs that do not depend on sample size. Leave 0 if none.</small>
           <input id="fixedCost" type="number" step="100" min="0" value="0">
         </div>
       </div>
       <div class="field">
-        <label for="targetROI">Target marginal ROI (×)</label>
-        <small>Stop adding interviews once the next batch's value-per-dollar drops below this multiple. IDinsight uses 8.</small>
+        <label for="targetROI">Value-for-money hurdle (×)</label>
+        <small>How much decision-value each extra survey dollar must still return for the survey to keep growing. At 8×, the tool stops once the next interviews buy less than $8 of better decisions per $1 spent. This is GiveWell's usual bar; lower it to justify bigger surveys, raise it to be stingier.</small>
         <input id="targetROI" type="number" step="0.5" min="0.1" value="8">
       </div>
-      <div class="row">
-        <label><small>N min</small><input id="NMin" type="number" step="50" min="10" value="100"></label>
-        <label><small>N max</small><input id="NMax" type="number" step="500" min="100" value="5000"></label>
-        <label><small>step</small><input id="NStep" type="number" step="10" min="10" value="100"></label>
-      </div>
-      <div class="row2">
-        <div class="field">
-          <label for="M">MC sims / N</label>
-          <input id="M" type="number" step="1000" min="1000" value="20000">
+
+      <details class="advanced">
+        <summary>Advanced: search range &amp; simulation settings</summary>
+        <div class="hint" style="margin-top:8px">You rarely need to touch these. The tool tries sample sizes from "N min" to "N max" in steps of "step", running this many simulations at each. The seed makes results reproducible.</div>
+        <div class="row">
+          <label><small>N min</small><input id="NMin" type="number" step="50" min="10" value="100"></label>
+          <label><small>N max</small><input id="NMax" type="number" step="500" min="100" value="5000"></label>
+          <label><small>step</small><input id="NStep" type="number" step="10" min="10" value="100"></label>
         </div>
-        <div class="field">
-          <label for="seed">Seed</label>
-          <input id="seed" type="number" step="1" value="40326">
+        <div class="row2">
+          <div class="field">
+            <label for="M">Simulations per size</label>
+            <input id="M" type="number" step="1000" min="1000" value="20000">
+          </div>
+          <div class="field">
+            <label for="seed">Random seed</label>
+            <input id="seed" type="number" step="1" value="40326">
+          </div>
         </div>
-      </div>
+      </details>
     </div>
   </section>
 
   <section>
     <div class="error" id="error"></div>
 
+    <div class="recommendation" id="recommendation">Fill in the inputs on the left to see a recommendation.</div>
+
     <div class="results">
-      <div class="result"><div class="lbl">Recommended N*</div><div class="val" id="res-nstar">—</div></div>
-      <div class="result"><div class="lbl">VoI at N*</div><div class="val" id="res-voi">—</div></div>
-      <div class="result"><div class="lbl">Marginal ROI at N*</div><div class="val" id="res-roi">—</div></div>
-      <div class="result"><div class="lbl">Survey cost at N*</div><div class="val" id="res-totalcost">—</div></div>
+      <div class="result"><div class="lbl">Recommended sample size</div><div class="val" id="res-nstar">—</div><div class="sub">interviews to run</div></div>
+      <div class="result"><div class="lbl">Value of the survey</div><div class="val" id="res-voi">—</div><div class="sub">better decisions it buys, in $</div></div>
+      <div class="result"><div class="lbl">Survey cost</div><div class="val" id="res-totalcost">—</div><div class="sub">at the recommended size</div></div>
+      <div class="result"><div class="lbl">Value per $ at the margin</div><div class="val" id="res-roi">—</div><div class="sub">return on the last interviews</div></div>
     </div>
 
-    <div class="card plot"><canvas id="plot-prior"></canvas></div>
-    <div class="card plot"><canvas id="plot-voi"></canvas></div>
-    <div class="card plot"><canvas id="plot-roi"></canvas></div>
+    <div class="card plot">
+      <canvas id="plot-prior"></canvas>
+      <p class="plot-note">Your starting beliefs about coverage. Taller bars are coverage levels you think are more likely. This is what the survey will sharpen.</p>
+    </div>
+    <div class="card plot">
+      <canvas id="plot-voi"></canvas>
+      <p class="plot-note">How much better the funding decision gets as the survey grows. It rises fast at first, then flattens — the first interviews teach you the most.</p>
+    </div>
+    <div class="card plot">
+      <canvas id="plot-roi"></canvas>
+      <p class="plot-note">The trade-off, in one line. Each point is what the next batch of interviews returns per dollar. The recommended size is the last point still above the dashed hurdle line; to its right, more interviews cost more than they are worth.</p>
+    </div>
 
     <p style="color:var(--muted);font-size:12px">
       Computing<span class="busy" id="busy">…</span> in your browser. Inputs are encoded in this page's URL — copy the address to share a design.

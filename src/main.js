@@ -5,7 +5,7 @@ import { drawLinePlot, drawBarPlot } from "./plots.js";
 import {
   readForm, writeForm, paramsToQuery, queryToParams,
   getCurrentHistogram, updateHistogramTotal, writeHistogramProb,
-  setResults, setDerivedDecision, N_BINS,
+  setResults, setDerivedDecision, setRecommendation, applyPreset, N_BINS,
 } from "./ui.js";
 
 let busyDepth = 0;
@@ -58,6 +58,8 @@ const compute = withBusy(() => {
     errEl.textContent = e.message;
     errEl.style.display = "block";
     setDerivedDecision({ pStar: null, vUp: null, vDown: null });
+    const rec = document.getElementById("recommendation");
+    if (rec) { rec.className = "recommendation"; rec.textContent = "Fix the issue flagged above to see a recommendation."; }
     return;
   }
   errEl.style.display = "none";
@@ -80,29 +82,36 @@ const compute = withBusy(() => {
     totalCost,
     marginalROIAtNStar: roiAtNStar,
   });
+  setRecommendation({
+    nStar: result.nStar,
+    voiAtNStar: result.voiAtNStar,
+    totalCost,
+    targetROI: p.targetROI,
+    atRangeTop: result.nStar != null && result.nStarIdx === result.ns.length - 1,
+  });
 
   drawBarPlot(document.getElementById("plot-prior"), {
-    title: "Prior on coverage (probability per 5pp bin, %)",
+    title: "Your starting beliefs about coverage",
     xLabel: "coverage",
-    yLabel: "%",
+    yLabel: "% chance",
     bins: histogram,
   });
   drawLinePlot(document.getElementById("plot-voi"), {
-    title: "VoI vs sample size",
-    xLabel: "N",
-    yLabel: "VoI ($)",
+    title: "Value of the survey, by sample size",
+    xLabel: "interviews (N)",
+    yLabel: "value ($)",
     markerX: result.nStar,
-    markerLabel: result.nStar != null ? `N* = ${result.nStar}` : "",
-    series: [{ xs: result.ns, ys: result.vois, label: "VoI", color: "#2563eb" }],
+    markerLabel: result.nStar != null ? `recommended = ${result.nStar.toLocaleString()}` : "",
+    series: [{ xs: result.ns, ys: result.vois, label: "survey value", color: "#2563eb" }],
   });
   drawLinePlot(document.getElementById("plot-roi"), {
-    title: "Marginal ROI vs N (target hurdle dashed)",
-    xLabel: "N",
-    yLabel: "marginal ROI (×)",
+    title: "Value returned by the next interviews (vs. your hurdle)",
+    xLabel: "interviews (N)",
+    yLabel: "value per $ spent (×)",
     markerX: result.nStar,
     series: [
-      { xs: result.ns, ys: result.marginalROI, label: "marginal ROI", color: "#059669" },
-      { xs: result.ns, ys: result.ns.map(() => p.targetROI), label: `target = ${p.targetROI}×`, color: "#9ca3af" },
+      { xs: result.ns, ys: result.marginalROI, label: "return on next interviews", color: "#059669" },
+      { xs: result.ns, ys: result.ns.map(() => p.targetROI), label: `your hurdle = ${p.targetROI}×`, color: "#9ca3af" },
     ],
   });
 
@@ -138,6 +147,17 @@ function init() {
   if (q) writeForm(q);
   syncMeanCIVisibility();
   document.getElementById("priorMode").addEventListener("change", () => {
+    syncMeanCIVisibility();
+    compute();
+  });
+  document.getElementById("preset").addEventListener("change", (e) => {
+    const note = document.getElementById("preset-note");
+    if (e.target.value) {
+      applyPreset(e.target.value);
+      if (note) note.classList.add("show");
+    } else if (note) {
+      note.classList.remove("show");
+    }
     syncMeanCIVisibility();
     compute();
   });

@@ -4,16 +4,18 @@ A small browser tool for picking the sample size of a single coverage survey (CM
 
 Adapted from the Bayesian VoI work IDinsight built for GiveWell's Nigeria CMAM coverage survey, simplified into a single page that any GiveWell staffer can open in a browser — no R, no Stan, no install.
 
+**New here?** Start with the [plain-language guide](docs/guide.md) — written for grantmakers, no statistics background assumed.
+
 ## Use it
 
-Open `index.html` in a browser (via a static server — see Develop), or visit the deployed GitHub Pages URL once it's set up. The page takes:
+Live tool: **https://markwalsh-gw.github.io/coverage-survey-sample-size/**. Or open `index.html` locally via a static server (see Develop). The page takes:
 
-- a prior on coverage (mean + 95% CI, or a custom 20-bin histogram),
-- a coverage threshold `p*` and the per-unit-coverage values under each budget scenario (`V_up`, `V_down`),
+- a prior on coverage (best guess + 95% range, or a custom 20-bin histogram),
+- the cost-effectiveness assumptions behind the funding decision (caseload, mortality, value per death, GiveDirectly anchor, the two budget scenarios, the 8× bar) — from these the tool **derives** the coverage tipping point `p*` and the per-unit-coverage values `V_up`, `V_down`,
 - a per-interview cost (and optional fixed survey cost),
 - a target marginal ROI hurdle (default 8×, matching IDinsight),
 
-and returns the largest sample size at which the next interviews still earn ≥ the target ROI, with VoI and marginal-ROI curves.
+and returns the largest sample size at which the next interviews still earn ≥ the target ROI, with value-of-information and marginal-return curves. Optional program templates (CMAM, nets, SMC, VAS, vaccination, water) pre-fill rough starting numbers.
 
 Inputs are encoded in the URL — copy the address bar to share a design.
 
