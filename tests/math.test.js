@@ -128,3 +128,39 @@ test("mulberry32 is deterministic for a given seed", () => {
   const r1 = mulberry32(123), r2 = mulberry32(123);
   for (let i = 0; i < 10; i++) assert.equal(r1(), r2());
 });
+
+// Reference values computed independently with exact rational arithmetic
+// (Python: I_x(a,b) = Σ_{j=a}^{a+b-1} C(n,j) x^j (1-x)^(n-j) over Fractions),
+// so they do not depend on any floating-point Beta algorithm.
+test("betaCdf matches exact rational reference values", () => {
+  close(betaCdf(0.62, 6, 14), 0.9982718340779401, 1e-12);
+  close(betaCdf(0.3, 2, 5), 0.579825, 1e-12);
+  close(betaCdf(0.2, 10, 3), 4.52608e-06, 1e-16);
+  close(betaCdf(0.45, 17, 17), 0.2808620166642399, 1e-12);
+});
+
+test("betaBinomialPmfArray matches exact rational reference values", () => {
+  // B(a,b) = (a-1)!(b-1)!/(a+b-1)! for integer a,b — evaluated over Fractions.
+  close(betaBinomialPmfArray(10, 2, 8)[3], 0.14860681114551083, 1e-12);
+  close(betaBinomialPmfArray(50, 7, 3)[12], 0.0011523395526780366, 1e-14);
+});
+
+test("normalCdf matches erf-based references within the A&S 7.1.26 error bound", () => {
+  // Reference: 0.5(1+erf(z/√2)) via math.erf; the approximation's |err| ≤ 1.5e-7.
+  close(normalCdf(0.5), 0.691462461274013, 2e-7);
+  close(normalCdf(1.0), 0.8413447460685429, 2e-7);
+  close(normalCdf(1.96), 0.9750021048517796, 2e-7);
+  close(normalCdf(2.5758), 0.9949995762622214, 2e-7);
+});
+
+test("priorFromMeanCI floors concentration at κ=2 for very wide stated intervals", () => {
+  // A 95% CI of [0.01, 0.99] around mean 0.5 is wider than even Beta(1,1) can
+  // honor; the elicitor floors at κ=2, yielding a prior whose actual interval
+  // probability EXCEEDS the requested level (i.e. slightly more confident
+  // than the most diffuse admissible Beta — documented behavior, not a bug).
+  const { alpha, beta, kappa } = priorFromMeanCI(0.5, 0.01, 0.99, 0.95);
+  close(alpha / (alpha + beta), 0.5, 1e-9);
+  assert.ok(kappa < 2.1, `κ should sit at the floor (got ${kappa})`);
+  const coverage = betaCdf(0.99, alpha, beta) - betaCdf(0.01, alpha, beta);
+  assert.ok(coverage >= 0.95, `coverage ${coverage} should be ≥ requested level`);
+});

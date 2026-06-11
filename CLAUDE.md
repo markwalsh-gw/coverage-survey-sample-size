@@ -96,6 +96,7 @@ BayesianPowerCalc/
 - **Approved packages only**: check with Mark before adding any new R/Python dependency outside the mainstream (tidyverse, rstan/cmdstanr, brms, shiny, pymc, numpy, scipy, streamlit)
 - **Flag risky actions**: large downloads, external API calls, auth setup, deployment — confirm before acting
 - **Validation first**: every algorithmic change must be regression-tested against IDinsight's published sample-size numbers before the UI changes
+- **Testing**: full suite (math + VoI quadrature cross-check + UI/plots/app integration) runs via `node --test tests/` in CI. This machine has **no Node**; run modules locally with macOS's JavaScriptCore: `jsc -m file.js` (jsc lives in `/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/`). UI tests use the zero-dependency DOM stub in `tests/helpers/dom.js` — extend it rather than adding jsdom. The math core was independently verified June 2026; see `docs/math_verification.md` before touching `src/math.js` / `src/voi.js` / `src/cea.js`
 
 ---
 

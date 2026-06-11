@@ -79,6 +79,25 @@ test("optimalNByMarginalROI returns largest N meeting the ROI hurdle", () => {
   assert.equal(r.nStar, 1000); // last grid point
 });
 
+test("voiAtN returns zeros for N ≤ 0", () => {
+  const r = voiAtN({ histogram: moderatePrior, N: 0, pStar: 0.3, vUp: 1e8, vDown: 2e7 });
+  assert.deepEqual(r, { voi: 0, uInformed: 0, uUninformed: 0 });
+});
+
+test("fixedCost is charged against the first grid step only", () => {
+  const base = {
+    histogram: moderatePrior, pStar: 0.35, vUp: 1e8, vDown: 2e7,
+    costPerInterview: 200, targetROI: 8,
+    NMin: 100, NMax: 500, NStep: 100, M: 2000, seed: 11,
+  };
+  const r = optimalNByMarginalROI({ ...base, fixedCost: 50000 });
+  assert.equal(r.marginalCost[0], 50000 + 100 * 200);
+  for (let i = 1; i < r.ns.length; i++) assert.equal(r.marginalCost[i], 100 * 200);
+  // VoI itself must be unaffected by costs.
+  const r0 = optimalNByMarginalROI({ ...base, fixedCost: 0 });
+  assert.deepEqual(r.vois, r0.vois);
+});
+
 test("optimalNByMarginalROI returns null nStar if hurdle never met", () => {
   const r = optimalNByMarginalROI({
     histogram: moderatePrior, pStar: 0.35, vUp: 1e8, vDown: 2e7,
