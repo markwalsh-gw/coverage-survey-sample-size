@@ -50,6 +50,21 @@ test("mortality page boots and computes end-to-end", async (t) => {
     assert.match(el("derived-deaths").textContent, /^1.?169 \/ 1.?375$/);
     assert.match(el("derived-priordeaths").textContent, /374/);
 
+    // The decision view (grant $25M, bar 4×, CE-at-best-guess 6× ⇒ R* = 10%).
+    assert.equal(el("res-rightcall").textContent, "87%");
+    assert.equal(el("res-voinet").textContent, "$1.5M"); // cost $2.0M with the URL's 350k fixed
+    assert.equal(el("res-optimal").textContent, "33 + 33");
+    assert.equal(el("cell-gr").textContent, "65%");
+    assert.equal(el("cell-gw").textContent, "8%");
+    assert.equal(el("cell-pw").textContent, "6%");
+    assert.equal(el("cell-pr").textContent, "21%");
+    assert.equal(el("derived-rstar").textContent, "10%");
+    assert.equal(el("derived-clearsbar").textContent, "71%");
+    assert.equal(el("derived-decidenow").textContent, "fund it");
+    assert.match(el("recommendation").innerHTML, /Decision math:/);
+    assert.match(el("sweep-table").innerHTML, /<th>Net value<\/th>/);
+    assert.match(el("sweep-table").innerHTML, /best value/);
+
     // Adequately powered at defaults → good banner mentioning both lenses.
     assert.equal(el("recommendation").className, "recommendation good");
     assert.match(el("recommendation").innerHTML, /adequately powered/);
@@ -124,5 +139,16 @@ test("mortality page boots and computes end-to-end", async (t) => {
     el("cT").dispatch("input");
     await waitFor(() => el("caveats").style.display === "none", "caveats to clear");
     assert.equal(el("recommendation").className, "recommendation good");
+  });
+
+  await t.test("setting the funding at stake to 0 switches the decision panel off", async () => {
+    el("grantSize").value = "0";
+    el("grantSize").dispatch("input");
+    await waitFor(() => el("res-rightcall").textContent === "—", "decision panel to blank");
+    assert.equal(el("error").style.display, "none");
+    assert.doesNotMatch(el("recommendation").innerHTML, /Decision math:/);
+    el("grantSize").value = "25000000";
+    el("grantSize").dispatch("input");
+    await waitFor(() => el("res-rightcall").textContent === "87%", "decision panel to return");
   });
 });

@@ -10,6 +10,8 @@ export const MORTALITY_FIELDS = [
   "cT", "cC", "m", "years", "icc",
   // Costs
   "fixedCost", "costPerCluster", "costPerChild",
+  // The decision this study informs
+  "grantSize", "bar", "ceBest",
   // What counts as an answer?
   "alpha", "targetPower", "thresholdR", "gamma",
 ];
@@ -19,6 +21,7 @@ export const MORTALITY_DEFAULTS = {
   rateC: 25, rateT: 25,
   cT: 55, cC: 55, m: 1000, years: 1, icc: 0.001,
   fixedCost: 500000, costPerCluster: 5000, costPerChild: 10,
+  grantSize: 25000000, bar: 4, ceBest: 6,
   alpha: 0.05, targetPower: 80, thresholdR: 5, gamma: 90,
 };
 
@@ -53,6 +56,7 @@ export function toModelParams(p) {
     thresholdR: p.thresholdR / 100,
     gamma: p.gamma / 100,
     fixedCost: p.fixedCost, costPerCluster: p.costPerCluster, costPerChild: p.costPerChild,
+    grantSize: p.grantSize, bar: p.bar, ceBest: p.ceBest,
   };
 }
 
@@ -68,7 +72,9 @@ export function validateMortalityParams(mp) {
   if (!(mp.priorMeanR < 1))
     errs.push("Reductions of 100% or more are impossible — keep the best guess below 100%.");
   if (!(riskT * (1 - mp.priorMeanR) < 1))
-    errs.push("With that much harm in your prior, treatment-arm mortality would exceed 1,000 per 1,000 — lower the harm end, the treatment baseline, or the follow-up.");
+    errs.push("At your best-guess effect, treatment-arm mortality would exceed 1,000 per 1,000 — adjust the prior, the treatment baseline, or the follow-up.");
+  else if (!(riskT * (1 - mp.priorLoR) < 1))
+    errs.push("The harm end of your prior would push treatment-arm mortality past 1,000 per 1,000 — raise the low end, or lower the baseline or follow-up.");
   if (!(mp.cT >= 2 && mp.cC >= 2)) errs.push("Each arm needs at least 2 clusters.");
   if (!(mp.m >= 1)) errs.push("Children per cluster must be at least 1.");
   if (!(mp.icc >= 0 && mp.icc < 1)) errs.push("ICC must be at least 0 and below 1.");
@@ -77,6 +83,10 @@ export function validateMortalityParams(mp) {
   if (!(mp.gamma > 0.5 && mp.gamma < 1)) errs.push("The confidence needed to conclude must be between 50% and 100%.");
   if (!(mp.thresholdR < mp.priorHiR))
     errs.push("Your 'smallest reduction that matters' sits above your whole prior — you could never conclude benefit.");
+  if (!(mp.grantSize >= 0)) errs.push("The funding at stake cannot be negative.");
+  if (mp.grantSize > 0 && !(mp.bar > 0)) errs.push("The bar must be above 0×.");
+  if (mp.grantSize > 0 && !(mp.ceBest > 0))
+    errs.push("Cost-effectiveness at your best guess must be above 0×.");
   return errs;
 }
 
@@ -132,8 +142,15 @@ export function clearMortalityResults() {
   for (const id of [
     "res-power", "res-mde", "res-needed", "res-conclusive", "res-belief",
     "res-weight", "res-cost",
+    "res-rightcall", "res-voinet", "res-optimal",
+    "cell-gr", "cell-gw", "cell-pr", "cell-pw",
     "derived-rr", "derived-priorbeats", "derived-priordeaths",
     "derived-deff", "derived-neff", "derived-spread", "derived-deaths",
+    "derived-rstar", "derived-clearsbar", "derived-decidenow",
+    // Dynamic sub-lines too, so stale parameter-dependent text never sits
+    // under a blanked value.
+    "res-power-sub", "res-needed-sub", "res-belief-sub", "res-cost-sub",
+    "res-rightcall-sub", "res-voinet-sub", "res-optimal-sub",
   ]) set(id, "—");
   const caveats = document.getElementById("caveats");
   if (caveats) { caveats.style.display = "none"; caveats.innerHTML = ""; }
@@ -142,7 +159,8 @@ export function clearMortalityResults() {
 }
 
 // r: analyzeDesign() bundle. ui: raw form values (UI units).
-export function setMortalityResults(r, ui) {
+// opt: optimalStudySize() result, or null when the decision panel is off.
+export function setMortalityResults(r, ui, opt = null) {
   // The classical view.
   set("res-power", fmtPct(r.power));
   set("res-power-sub", `chance of a significant result if the true effect is ${ui.priorMeanR}%; averaged over your whole prior it is ${fmtPct(r.assurance.any)}`);
@@ -164,6 +182,47 @@ export function setMortalityResults(r, ui) {
     `${fmtMoney(ui.fixedCost)} fixed + ${fmtMoney(ui.costPerCluster * clusters)} clusters + ` +
     `${fmtMoney(ui.costPerChild * clusters * ui.m)} children (≈ ${fmtMoney(r.cost / childYears)} per child-year)`);
 
+  // The decision view. `opt` is the optimalStudySize() result (may be null).
+  const dec = r.decision;
+  if (dec) {
+    set("res-rightcall", fmtPct(dec.pRightCall));
+    set("res-rightcall-sub",
+      `vs ${fmtPct(dec.pRightNow)} if you decided today with no study (today you would ${dec.grantNow ? "fund" : "pass"})`);
+    const net = dec.voi - r.cost;
+    set("res-voinet", fmtMoney(net));
+    set("res-voinet-sub",
+      `${fmtMoney(dec.voi)} of better-decision value − ${fmtMoney(r.cost)} study cost, measured against your ${ui.bar}× bar`);
+    if (opt && opt.atSweepEdge && opt.worthRunning) {
+      set("res-optimal", `${opt.cT}+ (search limit)`);
+      set("res-optimal-sub",
+        `net value is still rising at the tool's ${opt.cT}-cluster search cap — the true optimum may be larger`);
+    } else if (opt) {
+      set("res-optimal", opt.worthRunning ? `${opt.cT} + ${opt.cC}` : "none");
+      set("res-optimal-sub", opt.worthRunning
+        ? `clusters maximizing net value: ${fmtMoney(opt.net)} net at ${fmtMoney(opt.cost)} cost (you have ${ui.cT} + ${ui.cC})`
+        : "no study size pays for itself under these decision stakes");
+    } else {
+      set("res-optimal", "—");
+      set("res-optimal-sub", "optimal size unavailable");
+    }
+    set("cell-gr", fmtPct(dec.grantRight));
+    set("cell-gw", fmtPct(dec.grantWrong));
+    set("cell-pr", fmtPct(dec.passRight));
+    set("cell-pw", fmtPct(dec.passWrong));
+    set("derived-rstar", fmtPct(dec.rStar));
+    set("derived-clearsbar", fmtPct(dec.pTrueClears));
+    set("derived-decidenow", dec.grantNow ? "fund it" : "pass");
+  } else {
+    for (const id of ["res-rightcall", "res-voinet", "res-optimal",
+      "cell-gr", "cell-gw", "cell-pr", "cell-pw",
+      "derived-rstar", "derived-clearsbar", "derived-decidenow"]) set(id, "—");
+    set("res-rightcall-sub", ui.grantSize > 0
+      ? "needs a positive best-guess reduction (and a reachable bar)"
+      : "decision panel off — set the funding at stake above 0 to turn it on");
+    set("res-voinet-sub", "—");
+    set("res-optimal-sub", "—");
+  }
+
   // Derived strips.
   set("derived-rr", (1 - ui.priorMeanR / 100).toFixed(2));
   set("derived-priorbeats", fmtPct(r.bayes.priorPBeatsThr));
@@ -174,8 +233,9 @@ export function setMortalityResults(r, ui) {
   set("derived-deaths", `${Math.round(r.deaths.rawT).toLocaleString()} / ${Math.round(r.deaths.rawC).toLocaleString()}`);
 }
 
-// Headline banner: three states per the UX spec.
-export function setMortalityRecommendation(r, ui) {
+// Headline banner: three power states per the UX spec, plus the decision
+// sentence when the decision panel is live.
+export function setMortalityRecommendation(r, ui, opt = null) {
   const el = document.getElementById("recommendation");
   if (!el) return;
   const target = ui.targetPower / 100;
@@ -212,6 +272,21 @@ export function setMortalityRecommendation(r, ui) {
       `${ui.targetPower}% power), longer follow-up, or accepting that this study can only detect large effects. ` +
       `Cost as designed: ${fmtMoney(r.cost)}.`;
   }
+
+  if (r.decision) {
+    const net = r.decision.voi - r.cost;
+    html += ` <strong>Decision math:</strong> with ${fmtMoney(ui.grantSize)} riding on the call, ` +
+      `this study is worth ${fmtMoney(r.decision.voi)} in better decisions — ` +
+      `${net >= 0 ? `${fmtMoney(net)} more than it costs` : `${fmtMoney(-net)} less than it costs`}.`;
+    if (opt && opt.atSweepEdge && opt.worthRunning) {
+      html += ` Net value is still rising at the tool's ${opt.cT}-cluster search limit — bigger may be better still.`;
+    } else if (opt && opt.worthRunning && Math.abs(opt.cT - ui.cT) > 2) {
+      html += ` The value-maximizing size is about ${opt.cT} + ${opt.cC} clusters (${fmtMoney(opt.net)} net).`;
+    } else if (opt && !opt.worthRunning) {
+      html += ` No size pays for itself — by your own numbers the call is already clear enough to make without a study.`;
+    }
+  }
+
   el.className = cls;
   el.innerHTML = html;
 }
@@ -237,6 +312,10 @@ export function setMortalityCaveats(r, ui) {
     msgs.push(`By your own standard, this question is already ${fmtPct(Math.max(r.bayes.priorPBeatsThr, 1 - r.bayes.priorPBeatsThr))} settled before any data. A study can mostly only confirm what you believe — consider whether it is worth ${fmtMoney(r.cost)}, or set a stricter threshold.`);
   if (r.caveats.includes("mdeUnreachable"))
     msgs.push("No reduction — not even 100% — reaches your target power with this design. The minimum-detectable-effect card shows “not reachable” for that reason.");
+  if (r.caveats.includes("decisionNeedsBenefit"))
+    msgs.push("The decision panel needs a positive best-guess reduction: cost-effectiveness is anchored at your best guess, so a zero-or-harm central estimate leaves the grant math undefined. The rest of the page still works.");
+  if (r.caveats.includes("barUnreachable"))
+    msgs.push("At these numbers the program cannot clear your bar even if the true reduction were 100% — the breakeven reduction sits at or above 100%. Check the bar and the cost-effectiveness at your best guess.");
 
   if (msgs.length === 0) { el.style.display = "none"; el.innerHTML = ""; return; }
   el.style.display = "block";
@@ -245,17 +324,22 @@ export function setMortalityCaveats(r, ui) {
 
 // Design-sweep table. rows from designSweep(); marks the current design and
 // the clusters-for-target-power design; tints the first row meeting target.
-export function renderSweepTable(rows, { currentCT, neededCT, targetPower }) {
+export function renderSweepTable(rows, { currentCT, neededCT, targetPower, optimalCT = null }) {
   const el = document.getElementById("sweep-table");
   if (!el) return;
   let firstHit = null;
   for (const row of rows) {
     if (row.power >= targetPower) { firstHit = row.cT; break; }
   }
+  const hasNet = rows.some((row) => row.net != null);
+  if (hasNet && optimalCT == null) {
+    optimalCT = rows.reduce((a, b) => (b.net > a.net ? b : a)).cT;
+  }
   const tr = rows.map((row) => {
     const tags = [];
     if (row.cT === currentCT) tags.push("← your design");
     if (row.cT === neededCT && neededCT !== currentCT) tags.push(`← ${Math.round(targetPower * 100)}% power`);
+    if (row.cT === optimalCT && row.net > 0) tags.push("← best value");
     const cls = [];
     if (row.cT === currentCT) cls.push("current-row");
     if (row.cT === firstHit) cls.push("hit-target");
@@ -265,19 +349,24 @@ export function renderSweepTable(rows, { currentCT, neededCT, targetPower }) {
       `<td>${fmtPct(row.power)}</td>` +
       `<td>${fmtPct(row.pConclusive)}</td>` +
       `<td>${(row.expectedWidthR * 100).toFixed(0)} pts</td>` +
-      `<td>${fmtMoney(row.cost)}</td></tr>`;
+      `<td>${fmtMoney(row.cost)}</td>` +
+      (hasNet ? `<td>${row.net != null ? fmtMoney(row.net) : "—"}</td>` : "") +
+      `</tr>`;
   }).join("");
   el.innerHTML =
     `<thead><tr><th>Clusters (T + C)</th><th>Children</th><th>Power</th>` +
-    `<th>Chance conclusive</th><th>95% range width</th><th>Cost</th></tr></thead><tbody>${tr}</tbody>`;
+    `<th>Chance conclusive</th><th>95% range width</th><th>Cost</th>` +
+    (hasNet ? `<th>Net value</th>` : "") +
+    `</tr></thead><tbody>${tr}</tbody>`;
 }
 
-// The cluster ladder for the sweep table: fixed rungs + the current design +
-// the clusters-needed design, deduped and sorted. 8 fixed rungs + 2 injected
-// anchors can never exceed the 10-row budget.
-export function sweepLadder(currentCT, neededCT) {
+// The cluster ladder for the sweep table: fixed rungs + the current design,
+// the clusters-needed design, and the value-optimal design. 8 fixed rungs +
+// 3 injected anchors keep the table at 11 rows or fewer.
+export function sweepLadder(currentCT, neededCT, optimalCT = NaN) {
   const rungs = new Set([10, 20, 30, 40, 50, 60, 80, 100]);
   rungs.add(currentCT);
   if (Number.isFinite(neededCT) && neededCT <= 400) rungs.add(neededCT);
+  if (Number.isFinite(optimalCT) && optimalCT <= 400) rungs.add(optimalCT);
   return [...rungs].filter((c) => c >= 2).sort((a, b) => a - b);
 }

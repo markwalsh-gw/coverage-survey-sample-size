@@ -167,9 +167,68 @@ like a warning, not a result.
 
 ## Costs
 
-`Total = fixed + (c_t + c_c)·(cost per cluster + m·cost per child)` — display
-arithmetic only; no optimal-design loop in v1 (that is the coverage tool's
-VoI machinery, which could be attached later).
+`Total = fixed + (c_t + c_c)·(cost per cluster + m·cost per child)`.
+
+## The decision panel
+
+The study exists to inform a funding call: grant `$G` rides on the result,
+against a cost-effectiveness bar of `bar` (in multiples of cash, default 4×).
+
+**CEA bridge** (deliberately linear and transparent): cost-effectiveness
+scales with the true reduction, `CE(R) = ce_best · R / R_best`, where
+`ce_best` is the user's estimate of the program's cost-effectiveness if the
+true reduction equals their best guess `R_best`. The grant clears the bar
+exactly when `R ≥ R* = R_best · bar / ce_best` (the breakeven reduction,
+shown on screen). Requires `R_best > 0` and `R* < 1`; otherwise the panel is
+off with an on-screen caveat.
+
+**Decision rule.** After the study, fund iff the posterior *expected*
+reduction is at least `R*`. On the log scale that is
+`θ_post ≤ θ_K = θ* − s_post²/2` with `θ* = log(1 − R*)` (the `−s_post²/2`
+converts the posterior median of the risk ratio to its mean; the rule is
+Bayes-optimal for a payoff linear in `R`). Deciding today with no study uses
+the same rule at zero data: fund iff prior `E[R] = 1 − e^{μ+τ²/2} ≥ R*`.
+
+**The four outcomes.** The true effect and the post-study posterior mean are
+jointly normal: `θ ~ N(μ, τ²)`, `θ_post ~ N(μ, σ_pm²)`, with correlation
+`ρ = √w` (since `Cov(θ, θ_post) = w·τ²`). With `h = (θ* − μ)/τ`,
+`k = (θ_K − μ)/σ_pm`, and `Φ₂` the bivariate normal CDF:
+
+```
+P(fund, right)  = Φ₂(h, k, ρ)              [truly clears the bar, and we fund]
+P(fund, wrong)  = Φ(k) − Φ₂(h, k, ρ)
+P(pass, wrong)  = Φ(h) − Φ₂(h, k, ρ)       [missed a good grant]
+P(pass, right)  = 1 − Φ(h) − Φ(k) + Φ₂(h, k, ρ)
+```
+
+`Φ₂` is Genz's BVND algorithm (Drezner–Wesolowsky asymptotic expansion for
+|ρ| ≥ 0.925, Gauss–Legendre otherwise), regression-tested against the exact
+identity `Φ₂(0,0,ρ) = 1/4 + asin(ρ)/2π` and Monte Carlo. When `σ_pm < 10⁻¹²`
+(the study carries no weight) the cells collapse to the prior-only decision.
+
+**Value of the study.** Funding `$G` at true cost-effectiveness `CE(R)`
+instead of parking it at bar-level opportunities gains, in dollars-at-the-bar,
+`κ·(R − R*)` with `κ = G·ce_best/(R_best·bar)`; passing gains 0. The expected
+value with the study uses the lognormal partial expectation over the joint:
+
+```
+E[V_study] = κ·( P(fund) − e^{μ+τ²/2}·Φ(k − ρτ) − R*·P(fund) )
+E[V_now]   = max(0, κ·(E[R] − R*))
+VoI        = E[V_study] − E[V_now]   (≥ 0: the rule is Bayes-optimal;
+                                      clamped at 0 against float noise)
+```
+
+**Optimal study size** maximizes `VoI(design) − cost(design)` over treatment
+clusters 2…500 (control kept at the user's ratio; everything else fixed).
+The whole curve is plotted; if it never rises above zero, the tool says so
+plainly: by the user's own numbers the call is already clear enough to make
+without a study.
+
+Deliberate simplifications: cost-effectiveness linear in `R` through zero
+(no fixed program benefits, no morbidity floor); a single up-or-out grant
+decision (no partial sizing); study dollars and grant dollars valued at the
+same bar; `ce_best` supplied by the user rather than derived from a full CEA
+pipeline.
 
 ## Verification
 

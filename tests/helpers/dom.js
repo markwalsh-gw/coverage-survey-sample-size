@@ -117,6 +117,7 @@ export function buildMortalityDom() {
     rateC: "25", rateT: "25",
     cT: "55", cC: "55", m: "1000", years: "1", icc: "0.001",
     fixedCost: "500000", costPerCluster: "5000", costPerChild: "10",
+    grantSize: "25000000", bar: "4", ceBest: "6",
     alpha: "0.05", targetPower: "80", thresholdR: "5", gamma: "90",
   };
   for (const [id, value] of Object.entries(inputDefaults)) {
@@ -130,8 +131,13 @@ export function buildMortalityDom() {
     "res-power", "res-power-sub", "res-mde", "res-needed", "res-needed-sub",
     "res-conclusive", "res-belief", "res-belief-sub", "res-weight",
     "res-cost", "res-cost-sub",
+    "res-rightcall", "res-rightcall-sub", "res-voinet", "res-voinet-sub",
+    "res-optimal", "res-optimal-sub",
+    "cell-gr", "cell-gw", "cell-pr", "cell-pw",
     "derived-rr", "derived-priorbeats", "derived-priordeaths",
     "derived-deff", "derived-neff", "derived-spread", "derived-deaths",
+    "derived-rstar", "derived-clearsbar", "derived-decidenow",
+    "plot-cost-note",
   ]) doc.add(makeElement("div", id));
 
   doc.add(makeElement("table", "sweep-table"));

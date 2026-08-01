@@ -113,6 +113,12 @@ risk = rate/1,000 × follow-up years; DEFF = 1+(m−1)ρ; classical panel on the
 page integration in `tests/mortality.app.test.js` (DOM stub extended with `buildMortalityDom`).
 The coverage tool (`index.html`) is untouched apart from one header cross-link.
 
+Decision layer (added same month, per Mark): grant size at stake + bar (default 4×) + CE-at-best-guess
+inputs derive the breakeven reduction R\* = R_best·bar/ceBest; fund-vs-pass by posterior expected
+reduction; the four outcome cells (fund/pass × right/wrong) are closed-form bivariate-normal
+probabilities (corr = √w, Genz BVND); VoI in dollars-at-the-bar via lognormal partial expectations;
+optimal study size maximizes VoI − cost over cluster counts. All MC-cross-checked in tests.
+
 ## Key People
 
 | Name | Role | Context |

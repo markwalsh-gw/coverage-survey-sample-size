@@ -2,7 +2,7 @@
 // Everything is closed-form, so recompute runs synchronously on every input —
 // no busy spinner, no RNG, no seed.
 
-import { analyzeDesign, designSweep } from "./mortality.js";
+import { analyzeDesign, designSweep, optimalStudySize } from "./mortality.js";
 import { drawLinePlot } from "./plots.js";
 import {
   MORTALITY_FIELDS,
@@ -36,16 +36,18 @@ function compute() {
   }
   errEl.style.display = "none";
 
-  setMortalityResults(result, ui);
-  setMortalityRecommendation(result, ui);
+  const opt = result.decision ? optimalStudySize(mp) : null;
+  setMortalityResults(result, ui, opt);
+  setMortalityRecommendation(result, ui, opt);
   setMortalityCaveats(result, ui);
 
-  // Sweep table (fixed ladder + current + clusters-needed designs).
-  const ladder = sweepLadder(mp.cT, result.needed.cT);
+  // Sweep table (fixed ladder + current + clusters-needed + value-optimal designs).
+  const ladder = sweepLadder(mp.cT, result.needed.cT, opt && opt.worthRunning ? opt.cT : NaN);
   renderSweepTable(designSweep(mp, ladder), {
     currentCT: mp.cT,
     neededCT: result.needed.cT,
     targetPower: mp.targetPower,
+    optimalCT: opt && opt.worthRunning ? opt.cT : null,
   });
 
   // Fine sweep for the plots: 5 clusters up to 2.5× current (and past the
@@ -96,16 +98,42 @@ function compute() {
     ],
   });
 
-  drawLinePlot(document.getElementById("plot-cost"), {
-    title: "Precision per dollar",
-    xLabel: "total study cost ($)",
-    yLabel: "post-study 95% range (pts)",
-    markerX: result.cost,
-    markerLabel: "your design",
-    series: [
-      { xs: sweep.map((r) => r.cost), ys: sweep.map((r) => r.expectedWidthR * 100), label: "", color: "#2563eb" },
-    ],
-  });
+  if (opt) {
+    // Net decision value by size, from the full 2..500 optimum sweep
+    // (subsampled for drawing). The best size and the zero line tell the
+    // whole story: run the study at the peak; below zero, don't run it.
+    const pts = [];
+    for (let i = 0; i < opt.curve.cT.length; i += 4) pts.push(i);
+    if (pts[pts.length - 1] !== opt.curve.cT.length - 1) pts.push(opt.curve.cT.length - 1);
+    drawLinePlot(document.getElementById("plot-cost"), {
+      title: "Is the study worth it, by size?",
+      xLabel: "clusters per arm (treatment)",
+      yLabel: "net value ($)",
+      markerX: opt.worthRunning ? opt.cT : null,
+      markerLabel: opt.worthRunning ? `best size = ${opt.cT}` : "",
+      series: [
+        { xs: pts.map((i) => opt.curve.cT[i]), ys: pts.map((i) => opt.curve.net[i]), label: "decision value − cost", color: "#2563eb" },
+        { xs: pts.map((i) => opt.curve.cT[i]), ys: pts.map(() => 0), label: "break-even", color: "#9ca3af" },
+      ],
+    });
+    const note = document.getElementById("plot-cost-note");
+    if (note) note.textContent =
+      "The study's value for the grant call, minus what it costs, at every size. Run it at the peak; anywhere below the grey line, the study costs more than the better decision it buys.";
+  } else {
+    drawLinePlot(document.getElementById("plot-cost"), {
+      title: "Precision per dollar",
+      xLabel: "total study cost ($)",
+      yLabel: "post-study 95% range (pts)",
+      markerX: result.cost,
+      markerLabel: "your design",
+      series: [
+        { xs: sweep.map((r) => r.cost), ys: sweep.map((r) => r.expectedWidthR * 100), label: "", color: "#2563eb" },
+      ],
+    });
+    const note = document.getElementById("plot-cost-note");
+    if (note) note.textContent =
+      "Each extra million narrows your post-study range by less than the last one. The flat tail is money spent on precision you will not act on.";
+  }
 
   history.replaceState(null, "", `?${mortalityParamsToQuery(ui)}`);
 }

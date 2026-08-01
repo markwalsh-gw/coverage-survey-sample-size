@@ -284,6 +284,195 @@ export function assurance({ prior, se, alpha = 0.05 }) {
 }
 
 // ============================================================================
+// Bivariate normal CDF (Genz's BVND, via Drezner–Wesolowsky), needed for the
+// decision panel: the true effect theta and the post-study posterior mean are
+// jointly normal with correlation sqrt(w).
+// ============================================================================
+
+const GL6_W = [0.1713244923791704, 0.3607615730481386, 0.4679139345726910];
+const GL6_X = [0.9324695142031521, 0.6612093864662645, 0.2386191860831969];
+const GL12_W = [0.04717533638651183, 0.10693932599531843, 0.16007832854334622,
+  0.20316742672306592, 0.23349253653835481, 0.24914704581340277];
+const GL12_X = [0.9815606342467192, 0.9041172563704749, 0.7699026741943047,
+  0.5873179542866175, 0.3678314989981802, 0.1252334085114689];
+const GL20_W = [0.017614007139152118, 0.04060142980038694, 0.06267204833410907,
+  0.08327674157670475, 0.10193011981724044, 0.11819453196151842,
+  0.13168863844917663, 0.14209610931838205, 0.14917298647260375, 0.15275338713072585];
+const GL20_X = [0.9931285991850949, 0.9639719272779138, 0.9122344282513259,
+  0.8391169718222188, 0.7463319064601508, 0.636053680726515,
+  0.5108670019508271, 0.37370608871541956, 0.22778585114164507, 0.07652652113349734];
+
+// P(X > dh, Y > dk) for standard bivariate normal with correlation r.
+function bvnUpper(dh, dk, r) {
+  const twopi = 2 * Math.PI;
+  let x, w;
+  if (Math.abs(r) < 0.3) { w = GL6_W; x = GL6_X; }
+  else if (Math.abs(r) < 0.75) { w = GL12_W; x = GL12_X; }
+  else { w = GL20_W; x = GL20_X; }
+  let h = dh, k = dk, hk = h * k, bvn = 0;
+  if (Math.abs(r) < 0.925) {
+    if (Math.abs(r) > 0) {
+      const hs = (h * h + k * k) / 2;
+      const asr = Math.asin(r);
+      for (let i = 0; i < x.length; i++) {
+        for (const is of [-1, 1]) {
+          const sn = Math.sin((asr * (is * x[i] + 1)) / 2);
+          bvn += w[i] * Math.exp((sn * hk - hs) / (1 - sn * sn));
+        }
+      }
+      bvn = (bvn * asr) / (2 * twopi);
+    }
+    return bvn + normalCdf(-h) * normalCdf(-k);
+  }
+  // |r| >= 0.925: Drezner–Wesolowsky asymptotic expansion.
+  if (r < 0) { k = -k; hk = -hk; }
+  if (Math.abs(r) < 1) {
+    const as = (1 - r) * (1 + r);
+    let a = Math.sqrt(as);
+    const bs = (h - k) * (h - k);
+    const c = (4 - hk) / 8;
+    const d = (12 - hk) / 16;
+    let asr = -(bs / as + hk) / 2;
+    if (asr > -100) bvn = a * Math.exp(asr) * (1 - (c * (bs - as) * (1 - (d * bs) / 5)) / 3 + (c * d * as * as) / 5);
+    if (-hk < 100) {
+      const b = Math.sqrt(bs);
+      bvn -= Math.exp(-hk / 2) * Math.sqrt(twopi) * normalCdf(-b / a) * b * (1 - (c * bs * (1 - (d * bs) / 5)) / 3);
+    }
+    a /= 2;
+    for (let i = 0; i < x.length; i++) {
+      for (const is of [-1, 1]) {
+        const xs = (a * (is * x[i] + 1)) ** 2;
+        const rs = Math.sqrt(1 - xs);
+        asr = -(bs / xs + hk) / 2;
+        if (asr > -100) {
+          bvn += a * w[i] * Math.exp(asr) *
+            (Math.exp((-hk * (1 - rs)) / (2 * (1 + rs))) / rs - (1 + c * xs * (1 + d * xs)));
+        }
+      }
+    }
+    bvn = -bvn / twopi;
+  }
+  if (r > 0) bvn += normalCdf(-Math.max(h, k));
+  else {
+    bvn = -bvn;
+    if (k > h) bvn += normalCdf(k) - normalCdf(h);
+  }
+  return bvn;
+}
+
+// P(X ≤ h, Y ≤ k) for standard bivariate normal with correlation rho.
+export function bvnCdf(h, k, rho) {
+  if (!Number.isFinite(rho)) return NaN;
+  if (!Number.isFinite(h) || !Number.isFinite(k)) {
+    if (h === -Infinity || k === -Infinity) return 0;
+    if (h === Infinity) return normalCdf(k);
+    if (k === Infinity) return normalCdf(h);
+  }
+  return Math.max(0, Math.min(1, bvnUpper(-h, -k, rho)));
+}
+
+// ============================================================================
+// The decision panel: what the study does to the grant call.
+//
+// CEA bridge (linear, transparent): cost-effectiveness in multiples of cash
+// scales with the reduction, CE(R) = ceBest · R / R_best, so the grant clears
+// the bar exactly when R ≥ R* = R_best · bar / ceBest.
+//
+// Decision rule after the study (Bayes-optimal for a payoff linear in R):
+// fund iff the posterior EXPECTED reduction ≥ R*, i.e. theta_post ≤
+// theta* − v_post/2 (the −v_post/2 converts the posterior median of RR to
+// its mean). Jointly, (theta, theta_post) are bivariate normal with
+// correlation sqrt(w), which gives every cell of the outcome table and the
+// expected value of sample information in closed form.
+// ============================================================================
+export function decisionAnalysis({ prior, bayes, grantSize, bar, ceBest }) {
+  const { mu, tau } = prior;
+  const rBest = 1 - Math.exp(mu);
+  if (!(rBest > 0) || !(bar > 0) || !(ceBest > 0) || !(grantSize > 0)) return null;
+
+  const rStar = (rBest * bar) / ceBest; // breakeven reduction
+  if (!(rStar < 1)) return { rStar, unreachable: true };
+  const thetaStar = Math.log(1 - rStar);
+
+  const { w, postSd, sigmaPm } = bayes;
+  const vPost = postSd * postSd;
+  const thetaCut = thetaStar - vPost / 2; // fund iff theta_post ≤ thetaCut
+  const rho = Math.sqrt(Math.max(0, Math.min(1, w)));
+
+  const h = (thetaStar - mu) / tau; // standardized "true effect clears the bar"
+  const degenerate = sigmaPm < 1e-12;
+  const k = degenerate ? (mu <= thetaCut ? Infinity : -Infinity) : (thetaCut - mu) / sigmaPm;
+
+  const pTrueClears = normalCdf(h);
+  const pGrant = degenerate ? (k === Infinity ? 1 : 0) : normalCdf(k);
+  const grantRight = degenerate
+    ? (k === Infinity ? pTrueClears : 0)
+    : bvnCdf(h, k, rho);
+  const grantWrong = Math.max(0, pGrant - grantRight);
+  const passWrong = Math.max(0, pTrueClears - grantRight);
+  const passRight = Math.max(0, 1 - pGrant - pTrueClears + grantRight);
+  const pRightCall = grantRight + passRight;
+
+  // Deciding today, with no study: fund iff prior E[R] ≥ R*.
+  const meanR = 1 - Math.exp(mu + (tau * tau) / 2);
+  const grantNow = meanR >= rStar;
+  const pRightNow = grantNow ? pTrueClears : 1 - pTrueClears;
+
+  // Expected value, in dollars-at-your-bar: funding $G at CE(R) instead of
+  // parking it at bar-level cost-effectiveness gains G·(CE(R) − bar)/bar =
+  // kappa·(R − R*), with kappa = G·ceBest/(R_best·bar).
+  const kappa = (grantSize * ceBest) / (rBest * bar);
+  const evNow = Math.max(0, kappa * (meanR - rStar));
+  // E[e^theta · 1{fund}] is a lognormal partial expectation over the joint.
+  const eExpThetaGrant = degenerate
+    ? (k === Infinity ? Math.exp(mu + (tau * tau) / 2) : 0)
+    : Math.exp(mu + (tau * tau) / 2) * normalCdf(k - rho * tau);
+  const eRGrant = pGrant - eExpThetaGrant;
+  const evStudy = kappa * (eRGrant - rStar * pGrant);
+  const voi = Math.max(0, evStudy - evNow); // ≥ 0 in exact arithmetic (Bayes rule)
+
+  return {
+    rStar, thetaStar, kappa,
+    pTrueClears, pGrant, grantNow, pRightNow,
+    grantRight, grantWrong, passRight, passWrong, pRightCall,
+    evNow, evStudy, voi,
+  };
+}
+
+// Sweep treatment-cluster counts (control kept at the user's ratio) and find
+// the study size that maximizes VoI minus study cost. Returns the optimum and
+// the whole curve for plotting. Light-weight on purpose: only the pieces the
+// decision needs are recomputed per size.
+export function optimalStudySize(params, { cTMax = 500 } = {}) {
+  const {
+    priorMeanR, priorLoR, priorHiR, rateT, rateC, years, m, icc,
+    thresholdR = 0, gamma = 0.9,
+    fixedCost = 0, costPerCluster = 0, costPerChild = 0,
+    grantSize, bar, ceBest,
+  } = params;
+  const ratio = params.cC / params.cT;
+  const prior = priorOnLogRR({ mean: priorMeanR, lo: priorLoR, hi: priorHiR });
+  const pT0 = riskFromRate(rateT, years);
+  const pCr = riskFromRate(rateC, years);
+  const pT = pT0 * Math.exp(prior.mu);
+  const curve = { cT: [], voi: [], cost: [], net: [] };
+  let best = null;
+  for (let cT = 2; cT <= cTMax; cT++) {
+    const cC = Math.max(2, Math.round(ratio * cT));
+    const d = designSummary({ cT, cC, m, icc });
+    const se = seLogRR({ pT, pC: pCr, nEffT: d.nEffT, nEffC: d.nEffC });
+    const bayes = bayesianSummary({ prior, se, thresholdR, gamma });
+    const dec = decisionAnalysis({ prior, bayes, grantSize, bar, ceBest });
+    if (!dec || dec.unreachable) return null;
+    const cost = studyCost({ cT, cC, m, fixedCost, costPerCluster, costPerChild });
+    const net = dec.voi - cost;
+    curve.cT.push(cT); curve.voi.push(dec.voi); curve.cost.push(cost); curve.net.push(net);
+    if (best === null || net > best.net) best = { cT, cC, voi: dec.voi, cost, net };
+  }
+  return { ...best, worthRunning: best.net > 0, atSweepEdge: best.cT === cTMax, curve };
+}
+
+// ============================================================================
 // Costs, deaths, and the full result bundle
 // ============================================================================
 
@@ -312,6 +501,7 @@ export function analyzeDesign(params) {
     alpha = 0.05, targetPower = 0.8,
     thresholdR = 0, gamma = 0.9,
     fixedCost = 0, costPerCluster = 0, costPerChild = 0,
+    grantSize = 0, bar = 0, ceBest = 0,
   } = params;
 
   const pT0 = riskFromRate(rateT, years);
@@ -346,8 +536,11 @@ export function analyzeDesign(params) {
   const assur = assurance({ prior, se, alpha });
   const cost = studyCost({ cT, cC, m, fixedCost, costPerCluster, costPerChild });
   const deaths = expectedDeaths({ R: priorMeanR, pT0, pC, cT, cC, m, deff: design.deff });
+  const decision = decisionAnalysis({ prior, bayes, grantSize, bar, ceBest });
 
   const caveats = [];
+  if (grantSize > 0 && !(priorMeanR > 0)) caveats.push("decisionNeedsBenefit");
+  if (decision && decision.unreachable) caveats.push("barUnreachable");
   if (Math.min(cT, cC) < 15) caveats.push("fewClusters");
   if (Math.min(deaths.effT, deaths.effC) < 10) caveats.push("fewDeaths");
   if (prior.clamped) caveats.push("priorClamped");
@@ -359,7 +552,9 @@ export function analyzeDesign(params) {
 
   return {
     pT0, pC, pT, design, spreadT, spreadC, prior, se,
-    power, mde, needed, hbPerArm, bayes, assurance: assur, cost, deaths, caveats,
+    power, mde, needed, hbPerArm, bayes, assurance: assur, cost, deaths,
+    decision: decision && decision.unreachable ? null : decision,
+    caveats,
   };
 }
 
@@ -377,6 +572,7 @@ export function designSweep(params, cTValues) {
       pConclusive: r.bayes.pConclusiveEither,
       expectedWidthR: r.bayes.expectedWidthR,
       cost: r.cost,
+      net: r.decision ? r.decision.voi - r.cost : null,
     };
   });
 }

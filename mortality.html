@@ -66,20 +66,26 @@
   #sweep-table td em { color: var(--muted); font-style: italic; font-size: 11px; }
   #sweep-table tr.current-row td { font-weight: 600; }
   #sweep-table tr.hit-target td { background: #ecfdf5; }
+  .outcomes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+  .outcomes .cell { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--card); }
+  .outcomes .cell.right { border-color: #a7f3d0; background: #ecfdf5; }
+  .outcomes .cell.wrong { border-color: #fde68a; background: #fffbeb; }
+  .outcomes .cell .lbl { font-size: 11px; color: var(--muted); }
+  .outcomes .cell .val { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Will this study detect a mortality effect?</h1>
-  <p>Power and precision for a cluster-randomized study of all-cause mortality — the classical view and the Bayesian view, side by side.
+  <p>Power, precision, and decision value for a cluster-randomized study of all-cause mortality — the classical, Bayesian, and decision views, side by side.
      Sizing a coverage survey instead? Use the <a href="index.html">coverage survey tool</a>. For the math, see the <a href="docs/mortality_method.md">method notes</a>.</p>
 </header>
 
 <details class="explainer" open>
   <summary>How this tool works — in plain English</summary>
   <p><strong>The question.</strong> You are considering funding a cluster-randomized study of a program's effect on all-cause child deaths. Before spending millions, you want to know: will it come back with an answer, or just an expensive shrug?</p>
-  <p><strong>What you tell it.</strong> What you currently believe about the effect (a best guess and a range), how deadly the setting is, the shape of the study (clusters, children, follow-up, how much clusters differ), and what it costs.</p>
-  <p><strong>The two lenses.</strong> The <em>classical</em> row asks what a journal would ask: how often would a study this size produce a statistically significant result? The <em>Bayesian</em> row asks what you actually care about as a funder: starting from what you believe today, how much will this study change what you believe — and will it settle the question by your own standard?</p>
+  <p><strong>What you tell it.</strong> What you currently believe about the effect (a best guess and a range), how deadly the setting is, the shape of the study (clusters, children, follow-up, how much clusters differ), what it costs, and what funding decision rides on the result.</p>
+  <p><strong>The three lenses.</strong> The <em>classical</em> row asks what a journal would ask: how often would a study this size produce a statistically significant result? The <em>Bayesian</em> row asks what you actually care about as a funder: starting from what you believe today, how much will this study change what you believe? And the <em>decision</em> row follows the money: given the grant riding on the result, it traces the four ways the call can go — fund and be right, fund and be wrong, pass and be right, pass and be wrong — prices the study in dollars of better decisions, and finds the size that pays for itself best.</p>
   <p><strong>The one core idea.</strong> The information in a mortality study is its <em>deaths</em>, discounted for clustering. Children and clusters matter only through the number of deaths you expect to observe — that is why mortality studies are so much bigger than coverage surveys.</p>
   <p><strong>What it is not.</strong> It is a design-stage sizing aid using bell-curve approximations, not a trial statistical analysis plan. With few clusters or few expected deaths it flags its own limits on screen.</p>
 </details>
@@ -194,7 +200,35 @@
     </div>
 
     <div class="card">
-      <h2>5 · What counts as an answer?</h2>
+      <h2>5 · What decision rides on this study?</h2>
+      <div class="hint" style="margin-bottom:10px">The study exists to inform a funding call. Tell the tool what is at stake and it will trace what the study does to that call — including the chance it steers you wrong — and find the study size that pays for itself best.</div>
+      <div class="field">
+        <label for="grantSize">Funding at stake ($)</label>
+        <small>The grant you would make (or not) based on the result. Set to 0 to switch the decision panel off.</small>
+        <input id="grantSize" type="number" step="1000000" min="0" value="25000000">
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="bar">The bar (× cash)</label>
+          <small>Minimum cost-effectiveness, as a multiple of cash transfers, for the grant to be worth making.</small>
+          <input id="bar" type="number" step="0.5" min="0.5" value="4">
+        </div>
+        <div class="field">
+          <label for="ceBest">Cost-effectiveness at your best guess (× cash)</label>
+          <small>How cost-effective the program is if the true reduction equals your best guess. Scales linearly with the true effect.</small>
+          <input id="ceBest" type="number" step="0.5" min="0.5" value="6">
+        </div>
+      </div>
+      <div class="hint" style="margin-top:10px;margin-bottom:2px">Worked out from the above:</div>
+      <div class="derived">
+        <div class="item"><div class="lbl">Breakeven reduction</div><div class="val" id="derived-rstar">—</div><div class="sub">the grant clears the bar only if the true reduction beats this</div></div>
+        <div class="item"><div class="lbl">Chance it clears the bar</div><div class="val" id="derived-clearsbar">—</div><div class="sub">given your prior, before any study</div></div>
+        <div class="item"><div class="lbl">Deciding today, you would</div><div class="val" id="derived-decidenow">—</div><div class="sub">with no study, by expected cost-effectiveness</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>6 · What counts as an answer?</h2>
       <div class="hint" style="margin-bottom:10px">The standards of evidence. The first two are scientific conventions; the last two are your call as a funder.</div>
       <div class="row2">
         <div class="field">
@@ -242,6 +276,19 @@
       <div class="result"><div class="lbl">Where the answer comes from</div><div class="val" id="res-weight">—</div><div class="sub">how much of the post-study belief is new evidence vs. prior</div></div>
     </div>
 
+    <div class="results-caption">The decision view (what the study does to the grant call)</div>
+    <div class="results">
+      <div class="result"><div class="lbl">Chance of the right call</div><div class="val" id="res-rightcall">—</div><div class="sub" id="res-rightcall-sub">fund when it truly clears your bar, pass when it truly does not</div></div>
+      <div class="result"><div class="lbl">Study value, net of cost</div><div class="val" id="res-voinet">—</div><div class="sub" id="res-voinet-sub">what better decisions are worth, minus the study</div></div>
+      <div class="result"><div class="lbl">Best study size</div><div class="val" id="res-optimal">—</div><div class="sub" id="res-optimal-sub">clusters that maximize value minus cost</div></div>
+    </div>
+    <div class="outcomes">
+      <div class="cell right"><div class="lbl">Make the grant — and be right</div><div class="val" id="cell-gr">—</div></div>
+      <div class="cell wrong"><div class="lbl">Make the grant — and be wrong</div><div class="val" id="cell-gw">—</div></div>
+      <div class="cell wrong"><div class="lbl">Pass — and be wrong (missed a good grant)</div><div class="val" id="cell-pw">—</div></div>
+      <div class="cell right"><div class="lbl">Pass — and be right</div><div class="val" id="cell-pr">—</div></div>
+    </div>
+
     <div class="results-caption">Cost</div>
     <div class="results">
       <div class="result"><div class="lbl">Total study cost</div><div class="val" id="res-cost">—</div><div class="sub" id="res-cost-sub">fixed + clusters + children</div></div>
@@ -257,7 +304,7 @@
     </div>
     <div class="card plot">
       <canvas id="plot-cost"></canvas>
-      <p class="plot-note">Each extra million narrows your post-study range by less than the last one. The flat tail is money spent on precision you will not act on.</p>
+      <p class="plot-note" id="plot-cost-note">The study's value for the grant call, minus what it costs, at every size. Run it at the peak; anywhere below the grey line, the study costs more than the better decision it buys.</p>
     </div>
 
     <div class="card">
