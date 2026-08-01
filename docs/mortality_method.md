@@ -9,13 +9,13 @@ are `tests/mortality.test.js`.
 
 You are designing a cluster-randomized study (villages or health zones
 randomized, children followed) of a program's effect on **all-cause
-mortality**. Two questions, answered side by side:
-
-1. **Classical**: how often would a study this size produce a statistically
-   significant result? (power, minimum detectable effect, clusters needed)
-2. **Bayesian**: starting from what you believe today, how much will the study
-   change what you believe — and how likely is it to settle the question by
-   your own standard?
+mortality**, to inform a GiveWell funding decision. The page is a step-by-step
+value calculation (①–⑥): what the decision looks like today, what the study
+would measure, the four ways the post-study call can go (including the ways
+noise misleads it), the expected units of value the study generates, its cost
+in the same units, and the size at which the marginal data point stops paying
+for itself. A conventional frequentist power calculation sits at the bottom
+(⑦) as a sense-check.
 
 Everything is closed-form: no simulation, no seed, results identical on every
 recompute.
@@ -31,7 +31,7 @@ recompute.
 | `m` | children per cluster | assumed equal across clusters |
 | `ρ` | ICC of the death indicator | mortality ICCs are typically ~0.001–0.01 |
 | `α`, target power | conventions (0.05, 80%) | two-sided |
-| `R_thr`, `γ` | smallest reduction that matters; confidence needed to conclude | the Bayesian "conclusive" standard |
+| `G`, `bar`, `ce_best`, `ce_alt`, `gd` | the funding decision (card 5) | grant at stake; the bar; CE at best guess; CE of the next-best use; units per GiveDirectly $ |
 
 Derived and always displayed:
 
@@ -146,7 +146,9 @@ log-RR scale for conjugacy. The two tests are asymptotically equivalent and
 the scale choice moves the numbers by well under a percentage point in
 realistic designs.)
 
-**Probability of a conclusive answer.** "Conclusive benefit" means the
+**Probability of a conclusive answer** *(computed in the module and pinned by
+tests; not currently surfaced on the page — the decision pipeline below is the
+headline lens)*. "Conclusive benefit" means the
 posterior ends at least `γ` sure the reduction beats `R_thr`; with
 `θ_thr = log(1 − R_thr)` and the posterior mean preposterior-distributed as
 `Normal(μ, σ_pm²)`:
@@ -169,66 +171,107 @@ like a warning, not a result.
 
 `Total = fixed + (c_t + c_c)·(cost per cluster + m·cost per child)`.
 
-## The decision panel
+## The value pipeline (steps ① – ⑥ on the page)
 
-The study exists to inform a funding call: grant `$G` rides on the result,
-against a cost-effectiveness bar of `bar` (in multiples of cash, default 4×).
+The study exists to improve one funding call, and its output is measured in
+**GiveWell units of value** (dollars × cost-effectiveness in cash-multiples ×
+`gd` = units per GiveDirectly dollar, 0.003355 standard). The page walks the
+chain step by step; the formulas per step:
 
-**CEA bridge** (deliberately linear and transparent): cost-effectiveness
-scales with the true reduction, `CE(R) = ce_best · R / R_best`, where
-`ce_best` is the user's estimate of the program's cost-effectiveness if the
-true reduction equals their best guess `R_best`. The grant clears the bar
-exactly when `R ≥ R* = R_best · bar / ce_best` (the breakeven reduction,
-shown on screen). Requires `R_best > 0` and `R* < 1`; otherwise the panel is
-off with an on-screen caveat.
-
-**Decision rule.** After the study, fund iff the posterior *expected*
-reduction is at least `R*`. On the log scale that is
-`θ_post ≤ θ_K = θ* − s_post²/2` with `θ* = log(1 − R*)` (the `−s_post²/2`
-converts the posterior median of the risk ratio to its mean; the rule is
-Bayes-optimal for a payoff linear in `R`). Deciding today with no study uses
-the same rule at zero data: fund iff prior `E[R] = 1 − e^{μ+τ²/2} ≥ R*`.
-
-**The four outcomes.** The true effect and the post-study posterior mean are
-jointly normal: `θ ~ N(μ, τ²)`, `θ_post ~ N(μ, σ_pm²)`, with correlation
-`ρ = √w` (since `Cov(θ, θ_post) = w·τ²`). With `h = (θ* − μ)/τ`,
-`k = (θ_K − μ)/σ_pm`, and `Φ₂` the bivariate normal CDF:
+**① The decision today.** Grant `$G` rides on the call. Funding sends it to
+the program; passing sends it to the next-best use at cost-effectiveness
+`ce_alt` (usually just below the bar), worth `G·ce_alt·gd` units regardless
+of the truth. The program's cost-effectiveness scales linearly with the true
+reduction: `CE(R) = ce_best · R / R_best`, anchored at the user's estimate
+`ce_best` at their best guess `R_best` (> 0 required). Funding therefore
+beats passing exactly when `R ≥ R* = R_best · ce_alt / ce_best` (needs
+`R* < 1`). Relative to always-passing, funding at true `R` is worth
 
 ```
-P(fund, right)  = Φ₂(h, k, ρ)              [truly clears the bar, and we fund]
-P(fund, wrong)  = Φ(k) − Φ₂(h, k, ρ)
-P(pass, wrong)  = Φ(h) − Φ₂(h, k, ρ)       [missed a good grant]
-P(pass, right)  = 1 − Φ(h) − Φ(k) + Φ₂(h, k, ρ)
+κ·(R − R*) units,   κ = G · gd · ce_best / R_best
 ```
 
-`Φ₂` is Genz's BVND algorithm (Drezner–Wesolowsky asymptotic expansion for
-|ρ| ≥ 0.925, Gauss–Legendre otherwise), regression-tested against the exact
-identity `Φ₂(0,0,ρ) = 1/4 + asin(ρ)/2π` and Monte Carlo. When `σ_pm < 10⁻¹²`
-(the study carries no weight) the cells collapse to the prior-only decision.
+Deciding today: fund iff prior `E[R] = 1 − e^{μ+τ²/2} ≥ R*`, worth
+`E[V_now] = max(0, κ·(E[R] − R*))` units in expectation.
 
-**Value of the study.** Funding `$G` at true cost-effectiveness `CE(R)`
-instead of parking it at bar-level opportunities gains, in dollars-at-the-bar,
-`κ·(R − R*)` with `κ = G·ce_best/(R_best·bar)`; passing gains 0. The expected
-value with the study uses the lognormal partial expectation over the joint:
+**② What the study measures** is the Bayesian panel above: noise `se`, data
+weight `w`, posterior sd `s_post` — precision is the only thing sample size
+buys.
+
+**③ The four outcomes.** After the study, fund iff the posterior expected
+reduction beats `R*`: `θ_post ≤ θ_K = θ* − s_post²/2`, `θ* = log(1 − R*)`
+(Bayes-optimal for the linear payoff). The true effect and the posterior
+mean are jointly normal — `θ ~ N(μ, τ²)`, `θ_post ~ N(μ, σ_pm²)`,
+correlation `ρ = √w` — so with `h = (θ*−μ)/τ`, `k = (θ_K−μ)/σ_pm` and `Φ₂`
+the bivariate normal CDF (Genz BVND; exact-identity- and MC-tested):
 
 ```
-E[V_study] = κ·( P(fund) − e^{μ+τ²/2}·Φ(k − ρτ) − R*·P(fund) )
-E[V_now]   = max(0, κ·(E[R] − R*))
-VoI        = E[V_study] − E[V_now]   (≥ 0: the rule is Bayes-optimal;
-                                      clamped at 0 against float noise)
+P(fund, right)  = Φ₂(h, k, ρ)          P(fund, wrong) = Φ(k) − Φ₂(h, k, ρ)
+P(pass, wrong)  = Φ(h) − Φ₂(h, k, ρ)   P(pass, right) = 1 − Φ(h) − Φ(k) + Φ₂(h, k, ρ)
 ```
 
-**Optimal study size** maximizes `VoI(design) − cost(design)` over treatment
-clusters 2…500 (control kept at the user's ratio; everything else fixed).
-The whole curve is plotted; if it never rises above zero, the tool says so
-plainly: by the user's own numbers the call is already clear enough to make
-without a study.
+Each cell also carries its expected value contribution
+`κ·((1−R*)·P(cell) − E[e^θ·1{cell}])`, where the quadrant partial
+expectation follows from exponential tilting — shifting the means by
+`(τ², w·τ²)` and leaving ρ unchanged:
+
+```
+E[e^θ·1{θ≤a, θ_post≤b}] = e^{μ+τ²/2} · Φ₂((a−μ−τ²)/τ, (b−μ−wτ²)/σ_pm, ρ)
+```
+
+When `σ_pm < 10⁻¹²` (the study carries no weight) the cells collapse to the
+prior-only decision, mirroring the Bayesian-panel guard, and cells are
+clamped at 0 against float noise like the VoI clamp below.
+
+The two fund rows are real gains/losses; the two pass rows contribute 0
+relative to the next-best baseline, and their context numbers (value left
+unclaimed when misled into passing; losses dodged when passing rightly) are
+the same formula on their quadrants. The four pieces satisfy the exact
+identity: fund-right + fund-wrong + pass-wrong-forgone − pass-right-avoided
+= `κ·(E[R] − R*)`.
+
+**④ Value of the study (gross).** `E[V_study] =` the two fund rows summed
+(equivalently `κ·(E[R·1{fund}] − R*·P(fund))`), and
+`VoI = E[V_study] − E[V_now]` units — ≥ 0 in exact arithmetic because the
+post-study rule is Bayes-optimal (clamped at 0 against float noise).
+
+**⑤ Cost in the same units.** A study dollar could otherwise fund bar-level
+grantmaking: `cost_units = cost$ · bar · gd`. Net value = VoI − cost_units.
+
+**⑥ Optimal size.** Sweep treatment clusters 2…500 (controls at the user's
+ratio, all else fixed). The stopping rule, per Mark's specification: judge
+each marginal increase in sample size **against the bar**. The next
+cluster's cost-effectiveness as a cash multiple is
+
+```
+mMultiple = (Δ VoI_units / Δ cost$) / gd     — keep growing while ≥ bar
+```
+
+which is algebraically identical to "marginal units bought ≥ marginal units
+spent" (since Δcost_units = Δcost$·bar·gd): study dollars face the same bar
+as grant dollars. Two equivalent views are shown — the marginal multiple
+plotted against the bar line (recommended size = the crossing), and the
+cumulative net-value curve (recommended size = the peak); for a unimodal
+curve they coincide, and both are computed and reported, along with the whole
+study's average multiple `VoI_units/(gd·cost$)`. Controls are rounded to the
+nearest integer at the user's ratio (floor 2), which can make the marginal
+series sawtooth under non-integer ratios; the reported size is the last
+cluster whose marginal multiple clears the bar (it equalled the net argmax in
+every test configuration). If no size clears the bar the tool says so:
+better information is worth less than any study costs at these stakes.
+
+**⑦ Frequentist sense-check.** The same design run through the conventional
+lens (power at the best guess, MDE, clusters for target power, from the
+classical panel above), with an auto-generated comparison sentence. The two
+lenses answer different questions — significance vs. decision value — so a
+gap between "clusters for 80% power" and the value-optimal size is
+informative, not an error: with a strong prior or modest stakes the value
+lens accepts less certainty; with huge stakes it can demand more.
 
 Deliberate simplifications: cost-effectiveness linear in `R` through zero
-(no fixed program benefits, no morbidity floor); a single up-or-out grant
-decision (no partial sizing); study dollars and grant dollars valued at the
-same bar; `ce_best` supplied by the user rather than derived from a full CEA
-pipeline.
+(no fixed program benefits); a single up-or-out grant decision (no partial
+sizing); `ce_best` and `ce_alt` supplied by the user rather than derived
+from a full CEA pipeline; study dollars priced at the bar.
 
 ## Verification
 

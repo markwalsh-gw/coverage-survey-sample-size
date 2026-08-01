@@ -66,12 +66,13 @@
   #sweep-table td em { color: var(--muted); font-style: italic; font-size: 11px; }
   #sweep-table tr.current-row td { font-weight: 600; }
   #sweep-table tr.hit-target td { background: #ecfdf5; }
-  .outcomes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
-  .outcomes .cell { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--card); }
-  .outcomes .cell.right { border-color: #a7f3d0; background: #ecfdf5; }
-  .outcomes .cell.wrong { border-color: #fde68a; background: #fffbeb; }
-  .outcomes .cell .lbl { font-size: 11px; color: var(--muted); }
-  .outcomes .cell .val { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  #outcomes-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  #outcomes-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); border-bottom: 1px solid var(--border); padding: 6px 8px; }
+  #outcomes-table td { padding: 6px 8px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+  #outcomes-table td .note { color: var(--muted); font-size: 11px; }
+  #outcomes-table tr.right td { background: #ecfdf5; }
+  #outcomes-table tr.wrong td { background: #fffbeb; }
+  #outcomes-table tr.total td { font-weight: 600; border-top: 1px solid var(--border); background: #f9fafb; }
 </style>
 </head>
 <body>
@@ -85,7 +86,7 @@
   <summary>How this tool works — in plain English</summary>
   <p><strong>The question.</strong> You are considering funding a cluster-randomized study of a program's effect on all-cause child deaths. Before spending millions, you want to know: will it come back with an answer, or just an expensive shrug?</p>
   <p><strong>What you tell it.</strong> What you currently believe about the effect (a best guess and a range), how deadly the setting is, the shape of the study (clusters, children, follow-up, how much clusters differ), what it costs, and what funding decision rides on the result.</p>
-  <p><strong>The three lenses.</strong> The <em>classical</em> row asks what a journal would ask: how often would a study this size produce a statistically significant result? The <em>Bayesian</em> row asks what you actually care about as a funder: starting from what you believe today, how much will this study change what you believe? And the <em>decision</em> row follows the money: given the grant riding on the result, it traces the four ways the call can go — fund and be right, fund and be wrong, pass and be right, pass and be wrong — prices the study in dollars of better decisions, and finds the size that pays for itself best.</p>
+  <p><strong>How it answers.</strong> The page walks the value calculation step by step so every number can be audited: the funding decision as it stands today (①), what the study would measure (②), the four ways the post-study call can go — including the ways noise misleads it (③), what better decisions are worth in units of value (④), what the study costs in those same units (⑤), and the size at which the next data point stops paying for itself (⑥). A conventional frequentist power calculation sits at the bottom (⑦) as a sense-check on the whole chain.</p>
   <p><strong>The one core idea.</strong> The information in a mortality study is its <em>deaths</em>, discounted for clustering. Children and clusters matter only through the number of deaths you expect to observe — that is why mortality studies are so much bigger than coverage surveys.</p>
   <p><strong>What it is not.</strong> It is a design-stage sizing aid using bell-curve approximations, not a trial statistical analysis plan. With few clusters or few expected deaths it flags its own limits on screen.</p>
 </details>
@@ -115,7 +116,7 @@
       <div class="hint" style="margin-top:10px;margin-bottom:2px">Worked out from the above — you do not enter these:</div>
       <div class="derived">
         <div class="item"><div class="lbl">Implied risk ratio</div><div class="val" id="derived-rr">—</div><div class="sub">deaths in program areas as a fraction of deaths without it</div></div>
-        <div class="item"><div class="lbl">Beats your threshold today</div><div class="val" id="derived-priorbeats">—</div><div class="sub">chance the effect matters, before any data</div></div>
+        <div class="item"><div class="lbl">Beats breakeven today</div><div class="val" id="derived-priorbeats">—</div><div class="sub">chance the true effect beats R* (see step ①)</div></div>
         <div class="item"><div class="lbl">Prior worth in deaths</div><div class="val" id="derived-priordeaths">—</div><div class="sub">your prior carries the information of a study observing this many deaths</div></div>
       </div>
     </div>
@@ -174,7 +175,7 @@
         <div class="item"><div class="lbl">Design effect</div><div class="val" id="derived-deff">—</div><div class="sub">each child is worth 1/this of an independent child</div></div>
         <div class="item"><div class="lbl">Effective sample (T / C)</div><div class="val" id="derived-neff">—</div><div class="sub">independent-children equivalent per arm</div></div>
         <div class="item"><div class="lbl">Cluster-to-cluster spread</div><div class="val" id="derived-spread">—</div><div class="sub">death rates typically vary this much around the average</div></div>
-        <div class="item"><div class="lbl">Expected deaths (T / C)</div><div class="val" id="derived-deaths">—</div><div class="sub">the study's real currency</div></div>
+        <div class="item"><div class="lbl">Expected deaths (T / C)</div><div class="val" id="derived-deaths">—</div><div class="sub">the study's real currency; treatment side assumes your best-guess effect</div></div>
       </div>
     </div>
 
@@ -210,7 +211,7 @@
       <div class="row2">
         <div class="field">
           <label for="bar">The bar (× cash)</label>
-          <small>Minimum cost-effectiveness, as a multiple of cash transfers, for the grant to be worth making.</small>
+          <small>GiveWell's cost-effectiveness bar (× cash). Also prices study dollars: money spent on the study could otherwise fund bar-level work.</small>
           <input id="bar" type="number" step="0.5" min="0.5" value="4">
         </div>
         <div class="field">
@@ -219,17 +220,30 @@
           <input id="ceBest" type="number" step="0.5" min="0.5" value="6">
         </div>
       </div>
+      <div class="field">
+        <label for="ceAlt">Where the money goes if you pass (× cash)</label>
+        <small>Cost-effectiveness of the next-best use of the grant — usually just below the bar.</small>
+        <input id="ceAlt" type="number" step="0.5" min="0.5" value="4">
+      </div>
+      <details>
+        <summary>Advanced: units-of-value anchor</summary>
+        <div class="field">
+          <label for="gd">Units of value per $ at GiveDirectly</label>
+          <small>GiveWell's standard anchor converting dollars and cash-multiples into units of value. 0.003355 is the standard figure.</small>
+          <input id="gd" type="number" step="0.0001" min="0.000001" value="0.003355">
+        </div>
+      </details>
       <div class="hint" style="margin-top:10px;margin-bottom:2px">Worked out from the above:</div>
       <div class="derived">
-        <div class="item"><div class="lbl">Breakeven reduction</div><div class="val" id="derived-rstar">—</div><div class="sub">the grant clears the bar only if the true reduction beats this</div></div>
-        <div class="item"><div class="lbl">Chance it clears the bar</div><div class="val" id="derived-clearsbar">—</div><div class="sub">given your prior, before any study</div></div>
+        <div class="item"><div class="lbl">Breakeven reduction R*</div><div class="val" id="derived-rstar">—</div><div class="sub">funding beats the next-best use only if the true reduction beats this</div></div>
+        <div class="item"><div class="lbl">Beats breakeven today</div><div class="val" id="derived-clearsbar">—</div><div class="sub">your prior’s chance the true reduction beats R*</div></div>
         <div class="item"><div class="lbl">Deciding today, you would</div><div class="val" id="derived-decidenow">—</div><div class="sub">with no study, by expected cost-effectiveness</div></div>
       </div>
     </div>
 
     <div class="card">
-      <h2>6 · What counts as an answer?</h2>
-      <div class="hint" style="margin-bottom:10px">The standards of evidence. The first two are scientific conventions; the last two are your call as a funder.</div>
+      <h2>6 · Statistical conventions (for the sense-check)</h2>
+      <div class="hint" style="margin-bottom:10px">Used only by the frequentist sense-check at the bottom of the results. The value calculation does not depend on these.</div>
       <div class="row2">
         <div class="field">
           <label for="alpha">False-alarm rate (two-sided)</label>
@@ -242,18 +256,6 @@
           <input id="targetPower" type="number" step="5" min="55" max="99" value="80">
         </div>
       </div>
-      <div class="row2">
-        <div class="field">
-          <label for="thresholdR">Smallest reduction that matters (%)</label>
-          <small>Below this, you would act as if the program does not work. The Bayesian "conclusive" call is made against this line, not zero.</small>
-          <input id="thresholdR" type="number" step="1" min="-50" max="90" value="5">
-        </div>
-        <div class="field">
-          <label for="gamma">Confidence needed to conclude (%)</label>
-          <small>How sure your post-study belief must be — either way — before you call the question settled.</small>
-          <input id="gamma" type="number" step="5" min="55" max="99" value="90">
-        </div>
-      </div>
     </div>
   </section>
 
@@ -262,55 +264,80 @@
     <div id="caveats"></div>
     <div class="recommendation" id="recommendation">Fill in the inputs on the left to see results.</div>
 
-    <div class="results-caption">The classical view (what a journal would ask)</div>
-    <div class="results">
-      <div class="result"><div class="lbl">Power at your expected effect</div><div class="val" id="res-power">—</div><div class="sub" id="res-power-sub">chance of a significant result at your best guess</div></div>
-      <div class="result"><div class="lbl">Minimum detectable effect</div><div class="val" id="res-mde">—</div><div class="sub">smallest reduction this design reliably finds</div></div>
-      <div class="result"><div class="lbl">Clusters needed for target power</div><div class="val" id="res-needed">—</div><div class="sub" id="res-needed-sub">treatment + control, at your best-guess effect</div></div>
-    </div>
-
-    <div class="results-caption">The Bayesian view (what you will believe afterwards)</div>
-    <div class="results">
-      <div class="result"><div class="lbl">Chance of a conclusive answer</div><div class="val" id="res-conclusive">—</div><div class="sub">averaged over everything your prior says the effect could be</div></div>
-      <div class="result"><div class="lbl">Your belief after the study</div><div class="val" id="res-belief">—</div><div class="sub" id="res-belief-sub">typical 95% range for the reduction</div></div>
-      <div class="result"><div class="lbl">Where the answer comes from</div><div class="val" id="res-weight">—</div><div class="sub">how much of the post-study belief is new evidence vs. prior</div></div>
-    </div>
-
-    <div class="results-caption">The decision view (what the study does to the grant call)</div>
-    <div class="results">
-      <div class="result"><div class="lbl">Chance of the right call</div><div class="val" id="res-rightcall">—</div><div class="sub" id="res-rightcall-sub">fund when it truly clears your bar, pass when it truly does not</div></div>
-      <div class="result"><div class="lbl">Study value, net of cost</div><div class="val" id="res-voinet">—</div><div class="sub" id="res-voinet-sub">what better decisions are worth, minus the study</div></div>
-      <div class="result"><div class="lbl">Best study size</div><div class="val" id="res-optimal">—</div><div class="sub" id="res-optimal-sub">clusters that maximize value minus cost</div></div>
-    </div>
-    <div class="outcomes">
-      <div class="cell right"><div class="lbl">Make the grant — and be right</div><div class="val" id="cell-gr">—</div></div>
-      <div class="cell wrong"><div class="lbl">Make the grant — and be wrong</div><div class="val" id="cell-gw">—</div></div>
-      <div class="cell wrong"><div class="lbl">Pass — and be wrong (missed a good grant)</div><div class="val" id="cell-pw">—</div></div>
-      <div class="cell right"><div class="lbl">Pass — and be right</div><div class="val" id="cell-pr">—</div></div>
-    </div>
-
-    <div class="results-caption">Cost</div>
-    <div class="results">
-      <div class="result"><div class="lbl">Total study cost</div><div class="val" id="res-cost">—</div><div class="sub" id="res-cost-sub">fixed + clusters + children</div></div>
-    </div>
-
-    <div class="card plot">
-      <canvas id="plot-power"></canvas>
-      <p class="plot-note">Both curves flatten: past the knee, extra clusters buy almost nothing. Your design should sit near or beyond the point where the blue curve crosses the target line.</p>
-    </div>
-    <div class="card plot">
-      <canvas id="plot-belief"></canvas>
-      <p class="plot-note">The study's entire contribution in one picture: the narrower the blue curve compared to the grey, the more you learn. If they look the same, save the money.</p>
-    </div>
-    <div class="card plot">
-      <canvas id="plot-cost"></canvas>
-      <p class="plot-note" id="plot-cost-note">The study's value for the grant call, minus what it costs, at every size. Run it at the peak; anywhere below the grey line, the study costs more than the better decision it buys.</p>
+    <div class="card">
+      <h2>① The funding decision, before any study</h2>
+      <div class="hint" style="margin-bottom:8px">If you fund, the money goes to the program; if you pass, it goes to the next-best opportunity instead. Everything below is measured in GiveWell units of value ($ × cost-effectiveness × units per GiveDirectly dollar).</div>
+      <div class="derived">
+        <div class="item"><div class="lbl">Fund, if your best guess is true</div><div class="val" id="s1-fundval">—</div><div class="sub" id="s1-fundval-sub">grant × CE at best guess × units per $</div></div>
+        <div class="item"><div class="lbl">Pass (next-best use)</div><div class="val" id="s1-altval">—</div><div class="sub" id="s1-altval-sub">grant × alternative CE × units per $</div></div>
+        <div class="item"><div class="lbl">Breakeven reduction R*</div><div class="val" id="s1-rstar">—</div><div class="sub">funding wins only if the true reduction beats this</div></div>
+        <div class="item"><div class="lbl">Chance funding is right</div><div class="val" id="s1-pclear">—</div><div class="sub">your prior's probability the true reduction beats R*</div></div>
+        <div class="item"><div class="lbl">Expected reduction today</div><div class="val" id="s1-er">—</div><div class="sub">the average of your whole prior — differs from the best guess when the range is skewed</div></div>
+        <div class="item"><div class="lbl">Deciding today, you would</div><div class="val" id="s1-decide">—</div><div class="sub">whichever has higher expected value</div></div>
+        <div class="item"><div class="lbl">Expected value of today's call</div><div class="val" id="s1-evnow">—</div><div class="sub" id="s1-evnow-sub">vs. passing; this is what the study must improve on</div></div>
+      </div>
     </div>
 
     <div class="card">
-      <h2>What other sizes would buy</h2>
+      <h2>② What the study would measure</h2>
+      <div class="hint" style="margin-bottom:8px">The study estimates the reduction with noise. More clusters and children mean less noise — that is the only thing sample size buys.</div>
+      <div class="derived" style="margin-bottom:10px">
+        <div class="item"><div class="lbl">Where the answer comes from</div><div class="val" id="s2-weight">—</div><div class="sub">how much of the post-study belief is new data vs. prior</div></div>
+        <div class="item"><div class="lbl">Belief after the study</div><div class="val" id="s2-belief">—</div><div class="sub" id="s2-belief-sub">typical 95% range for the reduction</div></div>
+        <div class="item"><div class="lbl">Chance the study points wrong</div><div class="val" id="s2-mislead">—</div><div class="sub">it lands on the opposite side of R* from the truth</div></div>
+      </div>
+      <canvas id="plot-belief"></canvas>
+      <p class="plot-note">Grey: what you believe today. Blue: what you would typically believe after the study. The dashed line is the breakeven reduction R* — the study earns its keep by settling which side of that line the truth is on.</p>
+    </div>
+
+    <div class="card">
+      <h2>③ The four ways the call can go</h2>
+      <div class="hint" style="margin-bottom:8px">After the study, GiveWell funds if the updated best estimate beats R*. Sometimes the study confirms the right call, sometimes it rightly flips it, and sometimes noise misleads it. Each row: how likely, and what it does to expected value (relative to passing).</div>
+      <div class="table-wrap"><table id="outcomes-table"></table></div>
+    </div>
+
+    <div class="card">
+      <h2>④ What the study is worth (before costs)</h2>
+      <div class="results" style="margin-bottom:0">
+        <div class="result"><div class="lbl">Expected units, deciding with the study</div><div class="val" id="s4-withstudy">—</div><div class="sub">the fund rows of step ③, summed</div></div>
+        <div class="result"><div class="lbl">Expected units, deciding today</div><div class="val" id="s4-today">—</div><div class="sub">from step ①</div></div>
+        <div class="result"><div class="lbl">Value of the study (gross)</div><div class="val" id="s4-voi">—</div><div class="sub" id="s4-voi-sub">the difference — what better decisions are worth</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⑤ What the study costs, in the same units</h2>
+      <div class="results" style="margin-bottom:0">
+        <div class="result"><div class="lbl">Study cost</div><div class="val" id="s5-cost">—</div><div class="sub" id="s5-cost-sub">fixed + clusters + children</div></div>
+        <div class="result"><div class="lbl">Cost in units of value</div><div class="val" id="s5-costunits">—</div><div class="sub" id="s5-costunits-sub">a study dollar could otherwise fund bar-level work</div></div>
+        <div class="result"><div class="lbl">Net value of this design</div><div class="val" id="s5-net">—</div><div class="sub" id="s5-net-sub">step ④ minus the line to the left</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⑥ The best study size</h2>
+      <div class="hint" style="margin-bottom:8px">Each extra cluster buys a little more decision value and costs a little more money. Marginal study dollars face the same test as grant dollars: grow the study while the next cluster is still at least bar-level cost-effective (card 5's bar, default 4×); stop where it drops below.</div>
+      <div class="results" style="margin-bottom:10px">
+        <div class="result"><div class="lbl">Best size (treatment + control)</div><div class="val" id="s6-best">—</div><div class="sub" id="s6-best-sub">where the next data point stops paying for itself</div></div>
+      </div>
+      <canvas id="plot-marginal"></canvas>
+      <p class="plot-note" id="plot-marginal-note">The marginal test, cluster by cluster: the cost-effectiveness of the next cluster (blue, in multiples of cash) against your bar (grey). Keep adding clusters while blue is above grey; the best size is where they cross.</p>
+      <canvas id="plot-net"></canvas>
+      <p class="plot-note" id="plot-net-note">The same story cumulatively: the study's total value minus its total cost, at every size. Run it at the peak; below zero, the study is not worth running at all.</p>
+      <h3 style="margin-top:14px">What other sizes would buy</h3>
       <div class="table-wrap"><table id="sweep-table"></table></div>
       <p class="hint" style="margin-top:8px">Holding children per cluster, follow-up, and all other inputs at your values. Control clusters keep your treatment:control ratio.</p>
+    </div>
+
+    <div class="card">
+      <h2>⑦ Sense-check: what a frequentist power calculation says</h2>
+      <div class="hint" style="margin-bottom:8px">The conventional approach sizes a study for statistical significance rather than decision value. Comparing the two guards against the Bayesian machinery hiding a mistake.</div>
+      <div class="derived" style="margin-bottom:10px">
+        <div class="item"><div class="lbl">Power at your best guess</div><div class="val" id="s7-power">—</div><div class="sub" id="s7-power-sub">chance of a significant result if the true effect is your best guess</div></div>
+        <div class="item"><div class="lbl">Minimum detectable effect</div><div class="val" id="s7-mde">—</div><div class="sub">smallest reduction found reliably (at your target power)</div></div>
+        <div class="item"><div class="lbl">Clusters for target power</div><div class="val" id="s7-needed">—</div><div class="sub" id="s7-needed-sub">the conventional recommendation</div></div>
+      </div>
+      <div class="hint" id="s7-compare">—</div>
     </div>
 
     <p style="color:var(--muted);font-size:12px">
@@ -321,7 +348,7 @@
 
 <footer>
   Built for GiveWell. Pure client-side — your inputs never leave your browser.
-  Classical formulas follow the standard cluster-RCT design-effect approach (Donner &amp; Klar; Hayes &amp; Bennett); the Bayesian panel is a conjugate normal model on the log risk ratio.
+  Classical formulas follow the standard cluster-RCT design-effect approach (Donner &amp; Klar; Hayes &amp; Bennett); the Bayesian machinery is a standard textbook model (normal prior and update on the log risk ratio).
 </footer>
 
 <script type="module" src="src/mortality_main.js"></script>

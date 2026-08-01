@@ -375,8 +375,8 @@ export function bvnCdf(h, k, rho) {
 // The decision panel: what the study does to the grant call.
 //
 // CEA bridge (linear, transparent): cost-effectiveness in multiples of cash
-// scales with the reduction, CE(R) = ceBest · R / R_best, so the grant clears
-// the bar exactly when R ≥ R* = R_best · bar / ceBest.
+// scales with the reduction, CE(R) = ceBest · R / R_best, so funding beats
+// the next-best use exactly when R ≥ R* = R_best · ceAlt / ceBest.
 //
 // Decision rule after the study (Bayes-optimal for a payoff linear in R):
 // fund iff the posterior EXPECTED reduction ≥ R*, i.e. theta_post ≤
@@ -385,12 +385,14 @@ export function bvnCdf(h, k, rho) {
 // correlation sqrt(w), which gives every cell of the outcome table and the
 // expected value of sample information in closed form.
 // ============================================================================
-export function decisionAnalysis({ prior, bayes, grantSize, bar, ceBest }) {
+export function decisionAnalysis({ prior, bayes, grantSize, ceBest, ceAlt, gd }) {
   const { mu, tau } = prior;
   const rBest = 1 - Math.exp(mu);
-  if (!(rBest > 0) || !(bar > 0) || !(ceBest > 0) || !(grantSize > 0)) return null;
+  if (!(rBest > 0) || !(ceAlt > 0) || !(ceBest > 0) || !(grantSize > 0) || !(gd > 0)) return null;
 
-  const rStar = (rBest * bar) / ceBest; // breakeven reduction
+  // Breakeven: funding beats the next-best use iff CE(R) = ceBest·R/R_best
+  // exceeds ceAlt, i.e. iff R ≥ R*.
+  const rStar = (rBest * ceAlt) / ceBest;
   if (!(rStar < 1)) return { rStar, unreachable: true };
   const thetaStar = Math.log(1 - rStar);
 
@@ -399,77 +401,148 @@ export function decisionAnalysis({ prior, bayes, grantSize, bar, ceBest }) {
   const thetaCut = thetaStar - vPost / 2; // fund iff theta_post ≤ thetaCut
   const rho = Math.sqrt(Math.max(0, Math.min(1, w)));
 
-  const h = (thetaStar - mu) / tau; // standardized "true effect clears the bar"
+  const h = (thetaStar - mu) / tau; // standardized "true effect clears the breakeven"
   const degenerate = sigmaPm < 1e-12;
   const k = degenerate ? (mu <= thetaCut ? Infinity : -Infinity) : (thetaCut - mu) / sigmaPm;
 
   const pTrueClears = normalCdf(h);
   const pGrant = degenerate ? (k === Infinity ? 1 : 0) : normalCdf(k);
-  const grantRight = degenerate
-    ? (k === Infinity ? pTrueClears : 0)
-    : bvnCdf(h, k, rho);
-  const grantWrong = Math.max(0, pGrant - grantRight);
-  const passWrong = Math.max(0, pTrueClears - grantRight);
-  const passRight = Math.max(0, 1 - pGrant - pTrueClears + grantRight);
-  const pRightCall = grantRight + passRight;
+  const pGR = degenerate ? (k === Infinity ? pTrueClears : 0) : bvnCdf(h, k, rho);
+  const pGW = Math.max(0, pGrant - pGR);
+  const pPW = Math.max(0, pTrueClears - pGR);
+  const pPR = Math.max(0, 1 - pGrant - pTrueClears + pGR);
+  const pRightCall = pGR + pPR;
 
   // Deciding today, with no study: fund iff prior E[R] ≥ R*.
   const meanR = 1 - Math.exp(mu + (tau * tau) / 2);
   const grantNow = meanR >= rStar;
   const pRightNow = grantNow ? pTrueClears : 1 - pTrueClears;
 
-  // Expected value, in dollars-at-your-bar: funding $G at CE(R) instead of
-  // parking it at bar-level cost-effectiveness gains G·(CE(R) − bar)/bar =
-  // kappa·(R − R*), with kappa = G·ceBest/(R_best·bar).
-  const kappa = (grantSize * ceBest) / (rBest * bar);
-  const evNow = Math.max(0, kappa * (meanR - rStar));
-  // E[e^theta · 1{fund}] is a lognormal partial expectation over the joint.
-  const eExpThetaGrant = degenerate
-    ? (k === Infinity ? Math.exp(mu + (tau * tau) / 2) : 0)
-    : Math.exp(mu + (tau * tau) / 2) * normalCdf(k - rho * tau);
-  const eRGrant = pGrant - eExpThetaGrant;
-  const evStudy = kappa * (eRGrant - rStar * pGrant);
-  const voi = Math.max(0, evStudy - evNow); // ≥ 0 in exact arithmetic (Bayes rule)
+  // Value accounting, in GiveWell UNITS OF VALUE, measured relative to the
+  // next-best use of the money (which earns G·ceAlt·gd units regardless):
+  // funding at true reduction R gains kappaUnits·(R − R*), with
+  //   kappaUnits = G · gd · ceBest / R_best   [units per unit of R].
+  // Passing gains 0 by construction.
+  const kappaUnits = (grantSize * gd * ceBest) / rBest;
+  const fundValueBestUnits = grantSize * gd * ceBest; // absolute, at best guess
+  const altValueUnits = grantSize * gd * ceAlt;       // absolute, next-best use
+
+  // Per-cell expected contributions need E[(R − R*)·1{cell}], i.e. the
+  // lognormal partial expectation E[e^theta·1{cell}] over each quadrant of
+  // the joint. Exponential tilting by e^theta shifts the means by
+  // (tau², Cov = w·tau²) and leaves the correlation unchanged:
+  //   E[e^θ·1{θ≤a, θ_post≤b}] = M · Φ₂((a−μ−τ²)/τ, (b−μ−wτ²)/σ_pm, ρ),
+  // with M = e^{μ+τ²/2}.
+  const M = Math.exp(mu + (tau * tau) / 2);
+  const hT = (thetaStar - mu - tau * tau) / tau;
+  const kT = degenerate
+    ? k // ±Infinity carries through
+    : (thetaCut - mu - w * tau * tau) / sigmaPm;
+  const eGR = degenerate ? (k === Infinity ? M * normalCdf(hT) : 0) : M * bvnCdf(hT, kT, rho);
+  const eFund = degenerate ? (k === Infinity ? M : 0) : M * normalCdf(kT); // E[e^θ·1{fund}]
+  const eClears = M * normalCdf(hT);                                       // E[e^θ·1{clears}]
+  const eGW = Math.max(0, eFund - eGR);
+  const ePW = Math.max(0, eClears - eGR);
+  const ePR = Math.max(0, M - eFund - eClears + eGR);
+
+  // units(cell) = kappaUnits · ( (1−R*)·P(cell) − E[e^θ·1{cell}] ).
+  const cellUnits = (p, e) => kappaUnits * ((1 - rStar) * p - e);
+  const cells = {
+    grantRight: { p: pGR, units: cellUnits(pGR, eGR) },   // > 0: value won
+    grantWrong: { p: pGW, units: cellUnits(pGW, eGW) },   // < 0: value destroyed by being misled
+    // Pass rows contribute 0 relative to the next-best baseline; their
+    // context numbers show what passing left on the table / dodged.
+    passWrong: { p: pPW, units: 0, forgoneUnits: cellUnits(pPW, ePW) },   // > 0: value missed
+    passRight: { p: pPR, units: 0, avoidedLossUnits: -cellUnits(pPR, ePR) }, // > 0: losses dodged
+  };
+
+  const evStudyUnits = cells.grantRight.units + cells.grantWrong.units;
+  const evNowUnits = Math.max(0, kappaUnits * (meanR - rStar));
+  // ≥ 0 in exact arithmetic (the rule is Bayes-optimal); clamped vs float noise.
+  const voiUnits = Math.max(0, evStudyUnits - evNowUnits);
 
   return {
-    rStar, thetaStar, kappa,
-    pTrueClears, pGrant, grantNow, pRightNow,
-    grantRight, grantWrong, passRight, passWrong, pRightCall,
-    evNow, evStudy, voi,
+    rStar, thetaStar, kappaUnits, fundValueBestUnits, altValueUnits,
+    pTrueClears, pGrant, grantNow, pRightNow, pRightCall,
+    grantRight: pGR, grantWrong: pGW, passRight: pPR, passWrong: pPW,
+    cells, meanR,
+    evStudyUnits, evNowUnits, voiUnits,
   };
 }
 
 // Sweep treatment-cluster counts (control kept at the user's ratio) and find
-// the study size that maximizes VoI minus study cost. Returns the optimum and
-// the whole curve for plotting. Light-weight on purpose: only the pieces the
-// decision needs are recomputed per size.
+// the study size that maximizes VoI minus study cost, both in UNITS OF VALUE.
+// A study dollar's opportunity cost is bar-level grantmaking: cost_units =
+// cost$ · bar · gd. Returns the optimum, the full curve, and the marginal
+// series (extra units bought vs extra units spent by each additional
+// treatment cluster) for the marginal plot and the "last worthwhile data
+// point" readout.
 export function optimalStudySize(params, { cTMax = 500 } = {}) {
   const {
     priorMeanR, priorLoR, priorHiR, rateT, rateC, years, m, icc,
-    thresholdR = 0, gamma = 0.9,
     fixedCost = 0, costPerCluster = 0, costPerChild = 0,
-    grantSize, bar, ceBest,
+    grantSize, ceBest, ceAlt, bar, gd,
   } = params;
+  if (!(bar > 0) || !(gd > 0)) return null;
   const ratio = params.cC / params.cT;
   const prior = priorOnLogRR({ mean: priorMeanR, lo: priorLoR, hi: priorHiR });
   const pT0 = riskFromRate(rateT, years);
   const pCr = riskFromRate(rateC, years);
   const pT = pT0 * Math.exp(prior.mu);
-  const curve = { cT: [], voi: [], cost: [], net: [] };
+  const unitsPerDollar = bar * gd;
+  const curve = { cT: [], voiUnits: [], cost: [], costUnits: [], netUnits: [], mvUnits: [], mcUnits: [], mMultiple: [] };
   let best = null;
   for (let cT = 2; cT <= cTMax; cT++) {
     const cC = Math.max(2, Math.round(ratio * cT));
     const d = designSummary({ cT, cC, m, icc });
     const se = seLogRR({ pT, pC: pCr, nEffT: d.nEffT, nEffC: d.nEffC });
-    const bayes = bayesianSummary({ prior, se, thresholdR, gamma });
-    const dec = decisionAnalysis({ prior, bayes, grantSize, bar, ceBest });
+    const bayes = bayesianSummary({ prior, se });
+    const dec = decisionAnalysis({ prior, bayes, grantSize, ceBest, ceAlt, gd });
     if (!dec || dec.unreachable) return null;
     const cost = studyCost({ cT, cC, m, fixedCost, costPerCluster, costPerChild });
-    const net = dec.voi - cost;
-    curve.cT.push(cT); curve.voi.push(dec.voi); curve.cost.push(cost); curve.net.push(net);
-    if (best === null || net > best.net) best = { cT, cC, voi: dec.voi, cost, net };
+    const costUnits = cost * unitsPerDollar;
+    const netUnits = dec.voiUnits - costUnits;
+    const n = curve.cT.length;
+    curve.cT.push(cT);
+    curve.voiUnits.push(dec.voiUnits);
+    curve.cost.push(cost);
+    curve.costUnits.push(costUnits);
+    curve.netUnits.push(netUnits);
+    // Marginal step: what the (cT)th treatment cluster (plus its controls)
+    // buys and costs, and — the decision rule Mark specified — its
+    // cost-effectiveness as a cash multiple, to be judged against the bar:
+    //   mMultiple = (Δ VoI_units / Δ cost$) / gd.
+    // Since Δcost_units = Δcost$·bar·gd, "mv ≥ mc" ⇔ "mMultiple ≥ bar":
+    // marginal study dollars face the same bar as grant dollars.
+    const mv = n === 0 ? NaN : dec.voiUnits - curve.voiUnits[n - 1];
+    const mc = n === 0 ? NaN : costUnits - curve.costUnits[n - 1];
+    curve.mvUnits.push(mv);
+    curve.mcUnits.push(mc);
+    curve.mMultiple.push(n === 0 ? NaN : mc > 0 ? (bar * mv) / mc : Infinity);
+    if (best === null || netUnits > best.netUnits) {
+      best = { cT, cC, voiUnits: dec.voiUnits, cost, costUnits, netUnits };
+    }
   }
-  return { ...best, worthRunning: best.net > 0, atSweepEdge: best.cT === cTMax, curve };
+  // The last size at which the marginal data point still clears the bar
+  // (equals the net-max for a unimodal curve; reported so the marginal story
+  // and the max story can be shown side by side).
+  let lastWorthwhile = null;
+  for (let i = 1; i < curve.cT.length; i++) {
+    if (curve.mvUnits[i] >= curve.mcUnits[i]) lastWorthwhile = curve.cT[i];
+  }
+  return {
+    ...best,
+    worthRunning: best.netUnits > 0,
+    // >= cTMax − 1: with a non-integer control ratio, cC rounding makes the
+    // net curve sawtooth by parity, which could otherwise park the argmax at
+    // cTMax − 1 and mask a binding search window.
+    atSweepEdge: best.cT >= cTMax - 1,
+    lastWorthwhile,
+    unitsPerDollar,
+    // The whole study as a use of money, in cash multiples — compare to bar.
+    avgMultiple: best.cost > 0 ? best.voiUnits / (gd * best.cost) : Infinity,
+    curve,
+  };
 }
 
 // ============================================================================
@@ -501,7 +574,7 @@ export function analyzeDesign(params) {
     alpha = 0.05, targetPower = 0.8,
     thresholdR = 0, gamma = 0.9,
     fixedCost = 0, costPerCluster = 0, costPerChild = 0,
-    grantSize = 0, bar = 0, ceBest = 0,
+    grantSize = 0, bar = 0, ceBest = 0, ceAlt = 0, gd = 0,
   } = params;
 
   const pT0 = riskFromRate(rateT, years);
@@ -536,7 +609,8 @@ export function analyzeDesign(params) {
   const assur = assurance({ prior, se, alpha });
   const cost = studyCost({ cT, cC, m, fixedCost, costPerCluster, costPerChild });
   const deaths = expectedDeaths({ R: priorMeanR, pT0, pC, cT, cC, m, deff: design.deff });
-  const decision = decisionAnalysis({ prior, bayes, grantSize, bar, ceBest });
+  const decision = decisionAnalysis({ prior, bayes, grantSize, ceBest, ceAlt, gd });
+  const costUnits = bar > 0 && gd > 0 ? cost * bar * gd : null;
 
   const caveats = [];
   if (grantSize > 0 && !(priorMeanR > 0)) caveats.push("decisionNeedsBenefit");
@@ -547,12 +621,11 @@ export function analyzeDesign(params) {
   if (prior.asymmetry > 0.015) caveats.push("priorAsymmetric");
   if (rateT !== rateC) caveats.push("unequalBaselines");
   if (Math.max(spreadT.k, spreadC.k) > 0.5) caveats.push("highK");
-  if (bayes.priorConclusiveBenefit || bayes.priorConclusiveNull) caveats.push("priorSettled");
   if (!Number.isFinite(mde)) caveats.push("mdeUnreachable");
 
   return {
     pT0, pC, pT, design, spreadT, spreadC, prior, se,
-    power, mde, needed, hbPerArm, bayes, assurance: assur, cost, deaths,
+    power, mde, needed, hbPerArm, bayes, assurance: assur, cost, costUnits, deaths,
     decision: decision && decision.unreachable ? null : decision,
     caveats,
   };
@@ -572,7 +645,8 @@ export function designSweep(params, cTValues) {
       pConclusive: r.bayes.pConclusiveEither,
       expectedWidthR: r.bayes.expectedWidthR,
       cost: r.cost,
-      net: r.decision ? r.decision.voi - r.cost : null,
+      voiUnits: r.decision ? r.decision.voiUnits : null,
+      net: r.decision && r.costUnits != null ? r.decision.voiUnits - r.costUnits : null,
     };
   });
 }

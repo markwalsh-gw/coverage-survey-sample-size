@@ -113,11 +113,16 @@ risk = rate/1,000 × follow-up years; DEFF = 1+(m−1)ρ; classical panel on the
 page integration in `tests/mortality.app.test.js` (DOM stub extended with `buildMortalityDom`).
 The coverage tool (`index.html`) is untouched apart from one header cross-link.
 
-Decision layer (added same month, per Mark): grant size at stake + bar (default 4×) + CE-at-best-guess
-inputs derive the breakeven reduction R\* = R_best·bar/ceBest; fund-vs-pass by posterior expected
-reduction; the four outcome cells (fund/pass × right/wrong) are closed-form bivariate-normal
-probabilities (corr = √w, Genz BVND); VoI in dollars-at-the-bar via lognormal partial expectations;
-optimal study size maximizes VoI − cost over cluster counts. All MC-cross-checked in tests.
+Value pipeline (rebuilt August 2026 per Mark — "legible and auditable, IDinsight-style, frequentist
+sense-check at the bottom"): the results column is a numbered pipeline ①–⑦ in GiveWell UNITS OF VALUE.
+Inputs: grant at stake ($25M), bar (4×, prices study dollars), CE at best guess (6×), CE of next-best
+use ceAlt (4×, "just below the bar"), gd units/$ (0.003355, advanced). R\* = R_best·ceAlt/ceBest.
+The four outcomes (fund/pass × right/wrong) each carry probability AND expected units contribution
+(per-quadrant lognormal partial expectations via tilted Genz BVND, corr √w); decomposition identity
+tested. VoI = E[units with study] − E[units today]; cost_units = cost$·bar·gd; optimal size = net-max
+= marginal value/cost crossing (both reported). Conclusiveness (thresholdR/gamma) removed from the UI
+but kept in the module + tests. Frequentist power/MDE/clusters-needed demoted to step ⑦ sense-check
+with an auto-generated comparison sentence. Old URLs with removed params degrade gracefully.
 
 ## Key People
 

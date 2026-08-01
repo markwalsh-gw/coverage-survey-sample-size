@@ -437,19 +437,20 @@ test("bvnCdf agrees with Monte Carlo at the correlations the tool uses", () => {
   }
 });
 
-const DECISION_ARGS = { grantSize: 25e6, bar: 4, ceBest: 6 };
+const GD = 0.003355;
+const DECISION_ARGS = { grantSize: 25e6, ceBest: 6, ceAlt: 4, gd: GD };
 
 function defaultDecision() {
   const prior = priorOnLogRR({ mean: 0.15, lo: -0.05, hi: 0.30 });
   const d = designSummary({ cT: 55, cC: 55, m: 1000, icc: 0.001 });
   const se = seLogRR({ pT: 0.025 * 0.85, pC: 0.025, nEffT: d.nEffT, nEffC: d.nEffC });
-  const bayes = bayesianSummary({ prior, se, thresholdR: 0.05, gamma: 0.9 });
+  const bayes = bayesianSummary({ prior, se });
   return { prior, se, bayes, dec: decisionAnalysis({ prior, bayes, ...DECISION_ARGS }) };
 }
 
 test("decision cells partition, marginals match, and pins hold", () => {
   const { dec } = defaultDecision();
-  // Breakeven: R* = R_best·bar/ceBest = 15%·4/6 = 10%.
+  // Breakeven: R* = R_best·ceAlt/ceBest = 15%·4/6 = 10%.
   close(dec.rStar, 0.1, 1e-12);
   close(dec.grantRight + dec.grantWrong + dec.passRight + dec.passWrong, 1, 1e-9);
   close(dec.grantRight + dec.grantWrong, dec.pGrant, 1e-9);
@@ -462,40 +463,64 @@ test("decision cells partition, marginals match, and pins hold", () => {
   close(dec.grantWrong, 0.07685850985940468, 1e-9);
   close(dec.passRight, 0.21341279631410393, 1e-9);
   close(dec.passWrong, 0.056127006727084816, 1e-9);
-  close(dec.evNow, 11360165.21408244, 1e-3);
-  close(dec.evStudy, 14902518.876598286, 1e-3);
-  close(dec.voi, 3542353.662515845, 1e-3);
   assert.ok(dec.grantNow); // prior E[R] = 14.5% ≥ R* = 10%
   close(dec.pRightNow, dec.pTrueClears, 1e-12);
 });
 
-test("decision cells and expected values agree with full-pipeline Monte Carlo", () => {
+test("value accounting in units: absolutes, per-cell decomposition, VoI pins", () => {
+  const { dec } = defaultDecision();
+  // Step-① absolutes: $25M × CE × 0.003355 units/$.
+  close(dec.fundValueBestUnits, 25e6 * 6 * GD, 1e-9);  // 503,250
+  close(dec.altValueUnits, 25e6 * 4 * GD, 1e-9);       // 335,500
+  // Per-cell expected contributions (units, relative to the next-best use).
+  close(dec.cells.grantRight.units, 207187.46985622708, 1e-3);
+  close(dec.cells.grantWrong.units, -7195.666532278062, 1e-3);
+  close(dec.cells.passWrong.forgoneUnits, 5340.67258291852, 1e-3);
+  close(dec.cells.passRight.avoidedLossUnits, 52879.058733881095, 1e-3);
+  // Fund rows sum to the with-study expectation.
+  close(dec.cells.grantRight.units + dec.cells.grantWrong.units, dec.evStudyUnits, 1e-9);
+  // Full decomposition identity: value won + value destroyed + value missed
+  // − losses dodged = total value at stake, kappa·(E[R] − R*).
+  close(
+    dec.cells.grantRight.units + dec.cells.grantWrong.units +
+    dec.cells.passWrong.forgoneUnits - dec.cells.passRight.avoidedLossUnits,
+    dec.kappaUnits * (dec.meanR - dec.rStar),
+    1e-6
+  );
+  close(dec.evStudyUnits, 199991.80332394902, 1e-3);
+  close(dec.evNowUnits, 152453.41717298634, 1e-3);
+  close(dec.voiUnits, 47538.38615096267, 1e-3);
+});
+
+test("decision cells and per-cell values agree with full-pipeline Monte Carlo", () => {
   const { prior, se, bayes, dec } = defaultDecision();
-  const rng = mulberry32(20260802);
+  const rng = mulberry32(20260803);
   const normal = makeNormalSampler(rng);
   const M = 400000;
   const { mu, tau } = prior;
   const w = bayes.w, postVar = bayes.postSd ** 2;
   const thetaStar = Math.log(1 - dec.rStar);
   const thetaCut = thetaStar - postVar / 2;
-  const kappa = (DECISION_ARGS.grantSize * DECISION_ARGS.ceBest) / (0.15 * DECISION_ARGS.bar);
-  let nGR = 0, nGW = 0, nPR = 0, nPW = 0, sumV = 0;
+  const acc = { GR: [0, 0], GW: [0, 0], PR: [0, 0], PW: [0, 0] };
   for (let i = 0; i < M; i++) {
     const theta = mu + tau * normal();
     const thetaHat = theta + se * normal();
     const fund = w * thetaHat + (1 - w) * mu <= thetaCut;
     const clears = theta <= thetaStar;
-    if (fund && clears) nGR++;
-    else if (fund) nGW++;
-    else if (clears) nPW++;
-    else nPR++;
-    if (fund) sumV += kappa * (1 - Math.exp(theta) - dec.rStar);
+    const v = dec.kappaUnits * (1 - Math.exp(theta) - dec.rStar);
+    const key = fund ? (clears ? "GR" : "GW") : (clears ? "PW" : "PR");
+    acc[key][0]++;
+    acc[key][1] += v;
   }
-  close(dec.grantRight, nGR / M, 0.004);
-  close(dec.grantWrong, nGW / M, 0.004);
-  close(dec.passRight, nPR / M, 0.004);
-  close(dec.passWrong, nPW / M, 0.004);
-  close(dec.evStudy / 1e6, sumV / M / 1e6, 0.06);
+  close(dec.cells.grantRight.p, acc.GR[0] / M, 0.004);
+  close(dec.cells.grantWrong.p, acc.GW[0] / M, 0.004);
+  close(dec.cells.passRight.p, acc.PR[0] / M, 0.004);
+  close(dec.cells.passWrong.p, acc.PW[0] / M, 0.004);
+  // MC se on the value sums ≈ 250 units at 400k draws; allow ~4σ.
+  close(dec.cells.grantRight.units, acc.GR[1] / M, 1000);
+  close(dec.cells.grantWrong.units, acc.GW[1] / M, 1000);
+  close(dec.cells.passWrong.forgoneUnits, acc.PW[1] / M, 1000);
+  close(dec.cells.passRight.avoidedLossUnits, -acc.PR[1] / M, 1000);
 });
 
 test("decision degenerates sensibly", () => {
@@ -505,17 +530,17 @@ test("decision degenerates sensibly", () => {
     prior, bayes: bayesianSummary({ prior, se: 1000 }), ...DECISION_ARGS,
   });
   close(tiny.pGrant, tiny.grantNow ? 1 : 0, 1e-6);
-  close(tiny.voi, 0, 1);
+  close(tiny.voiUnits, 0, 1);
   // Harm-side best guess: panel off.
   assert.equal(decisionAnalysis({
     prior: { mu: Math.log(1.05), tau: 0.1 },
     bayes: bayesianSummary({ prior: { mu: Math.log(1.05), tau: 0.1 }, se: 0.1 }),
     ...DECISION_ARGS,
   }), null);
-  // Bar out of reach: flagged.
+  // Breakeven out of reach: flagged.
   const far = decisionAnalysis({
     prior, bayes: bayesianSummary({ prior, se: 0.1 }),
-    grantSize: 25e6, bar: 4, ceBest: 0.5,
+    grantSize: 25e6, ceBest: 0.5, ceAlt: 4, gd: GD,
   });
   assert.ok(far.unreachable);
 });
@@ -527,7 +552,7 @@ test("bigger studies weakly improve the chance of the right call; VoI stays nonn
     const d = designSummary({ cT, cC: cT, m: 1000, icc: 0.001 });
     const se = seLogRR({ pT: 0.025 * 0.85, pC: 0.025, nEffT: d.nEffT, nEffC: d.nEffC });
     const dec = decisionAnalysis({ prior, bayes: bayesianSummary({ prior, se }), ...DECISION_ARGS });
-    assert.ok(dec.voi >= 0);
+    assert.ok(dec.voiUnits >= 0);
     if (last !== null) assert.ok(dec.pRightCall >= last - 1e-9);
     last = dec.pRightCall;
   }
@@ -594,8 +619,6 @@ test("analyzeDesign flags the right caveats", () => {
   assert.ok(unequal.caveats.includes("unequalBaselines"));
   const highK = analyzeDesign({ ...DEFAULTS, icc: 0.05, m: 100 });
   assert.ok(highK.caveats.includes("highK"));
-  const settled = analyzeDesign({ ...DEFAULTS, thresholdR: 0, priorLoR: 0.05, priorMeanR: 0.2, priorHiR: 0.33 });
-  assert.ok(settled.caveats.includes("priorSettled"));
   const clamped = analyzeDesign({ ...DEFAULTS, priorHiR: 1.2 });
   assert.ok(clamped.caveats.includes("priorClamped"));
 });
@@ -631,31 +654,50 @@ test("designSweep keeps the allocation ratio and is monotone", () => {
   assert.equal(rows[0].net, null);
 });
 
-test("optimalStudySize finds an interior optimum that beats its neighbors", () => {
-  const params = { ...DEFAULTS, ...DECISION_ARGS };
+test("optimalStudySize: interior optimum, marginal crossing, unit conversion", () => {
+  const params = { ...DEFAULTS, ...DECISION_ARGS, bar: 4 };
   const opt = optimalStudySize(params);
   assert.equal(opt.cT, 33);
   assert.equal(opt.cC, 33);
-  close(opt.net, 1602012.3605366144, 1e-3);
+  close(opt.netUnits, 21499.005878401364, 1e-3);
   assert.ok(opt.worthRunning);
   assert.ok(!opt.atSweepEdge);
+  // The marginal story agrees with the max story (unimodal curve): the last
+  // cluster whose value exceeds its cost is the argmax.
+  assert.equal(opt.lastWorthwhile, 33);
+  close(opt.unitsPerDollar, 4 * GD, 1e-12);
+  // Mark's stopping rule, explicitly: the marginal data point is judged
+  // against the bar as a cash multiple. At the optimum the next cluster's
+  // multiple straddles the bar, and mMultiple = bar·mv/mc identically.
+  const iOpt = opt.curve.cT.indexOf(33);
+  assert.ok(opt.curve.mMultiple[iOpt] >= 4, "cluster 33 clears the 4x bar");
+  assert.ok(opt.curve.mMultiple[iOpt + 1] < 4, "cluster 34 falls below the 4x bar");
+  close(opt.curve.mMultiple[10], (4 * opt.curve.mvUnits[10]) / opt.curve.mcUnits[10], 1e-9);
+  // The whole study as a use of money: 8.3x cash at the optimum, vs the 4x bar.
+  close(opt.avgMultiple, opt.voiUnits / (GD * opt.cost), 1e-9);
+  close(opt.avgMultiple, 8.3007, 0.001);
   const netAt = (cT) => {
     const r = analyzeDesign({ ...params, cT, cC: cT });
-    return r.decision.voi - r.cost;
+    return r.decision.voiUnits - r.costUnits;
   };
-  assert.ok(opt.net >= netAt(opt.cT - 5));
-  assert.ok(opt.net >= netAt(opt.cT + 5));
+  assert.ok(opt.netUnits >= netAt(opt.cT - 5));
+  assert.ok(opt.netUnits >= netAt(opt.cT + 5));
   assert.equal(opt.curve.cT.length, 499); // 2..500
-  // With decision inputs, sweep rows carry net value.
+  // Marginal series: mv[i] = voi[i] − voi[i−1]; mc likewise; NaN at i=0.
+  assert.ok(Number.isNaN(opt.curve.mvUnits[0]));
+  close(opt.curve.mvUnits[10], opt.curve.voiUnits[10] - opt.curve.voiUnits[9], 1e-9);
+  close(opt.curve.mcUnits[10], opt.curve.costUnits[10] - opt.curve.costUnits[9], 1e-9);
+  // With decision inputs, sweep rows carry units.
   const rows = designSweep(params, [20, 40]);
   assert.ok(Number.isFinite(rows[0].net));
+  assert.ok(Number.isFinite(rows[0].voiUnits));
 });
 
 test("optimalStudySize flags a rising curve at the search cap", () => {
   // Free clusters and children: more is always better, so the optimum pins
   // to cTMax and must be flagged rather than presented as interior.
   const opt = optimalStudySize({
-    ...DEFAULTS, ...DECISION_ARGS,
+    ...DEFAULTS, ...DECISION_ARGS, bar: 4,
     fixedCost: 0, costPerCluster: 0, costPerChild: 0,
   });
   assert.equal(opt.cT, 500);
@@ -683,9 +725,10 @@ test("validation rejects priors whose harm end pushes treatment risk past 1", ()
 });
 
 test("analyzeDesign wires the decision panel and its caveats", () => {
-  const r = analyzeDesign({ ...DEFAULTS, ...DECISION_ARGS });
+  const r = analyzeDesign({ ...DEFAULTS, ...DECISION_ARGS, bar: 4 });
   close(r.decision.pRightCall, 0.8670144834135105, 1e-9);
-  close(r.decision.voi, 3542353.662515845, 1e-3);
+  close(r.decision.voiUnits, 47538.38615096267, 1e-3);
+  close(r.costUnits, 2150000 * 4 * GD, 1e-9);
   assert.deepEqual(r.caveats, []);
   // grantSize 0 (the model default) → panel off, no caveat.
   assert.equal(analyzeDesign(DEFAULTS).decision, null);
@@ -696,7 +739,7 @@ test("analyzeDesign wires the decision panel and its caveats", () => {
   });
   assert.equal(harm.decision, null);
   assert.ok(harm.caveats.includes("decisionNeedsBenefit"));
-  // Bar unreachable → caveat, panel off.
+  // Breakeven unreachable → caveat, panel off.
   const far = analyzeDesign({ ...DEFAULTS, ...DECISION_ARGS, ceBest: 0.5 });
   assert.equal(far.decision, null);
   assert.ok(far.caveats.includes("barUnreachable"));

@@ -117,8 +117,8 @@ export function buildMortalityDom() {
     rateC: "25", rateT: "25",
     cT: "55", cC: "55", m: "1000", years: "1", icc: "0.001",
     fixedCost: "500000", costPerCluster: "5000", costPerChild: "10",
-    grantSize: "25000000", bar: "4", ceBest: "6",
-    alpha: "0.05", targetPower: "80", thresholdR: "5", gamma: "90",
+    grantSize: "25000000", bar: "4", ceBest: "6", ceAlt: "4", gd: "0.003355",
+    alpha: "0.05", targetPower: "80",
   };
   for (const [id, value] of Object.entries(inputDefaults)) {
     const el = makeElement("input", id);
@@ -128,20 +128,21 @@ export function buildMortalityDom() {
 
   for (const id of [
     "error", "caveats", "recommendation",
-    "res-power", "res-power-sub", "res-mde", "res-needed", "res-needed-sub",
-    "res-conclusive", "res-belief", "res-belief-sub", "res-weight",
-    "res-cost", "res-cost-sub",
-    "res-rightcall", "res-rightcall-sub", "res-voinet", "res-voinet-sub",
-    "res-optimal", "res-optimal-sub",
-    "cell-gr", "cell-gw", "cell-pr", "cell-pw",
+    "s1-fundval", "s1-fundval-sub", "s1-altval", "s1-altval-sub",
+    "s1-rstar", "s1-pclear", "s1-er", "s1-decide", "s1-evnow", "s1-evnow-sub",
+    "derived-rstar", "derived-clearsbar", "derived-decidenow",
+    "s2-weight", "s2-belief", "s2-belief-sub", "s2-mislead",
+    "s4-withstudy", "s4-today", "s4-voi", "s4-voi-sub",
+    "s5-cost", "s5-cost-sub", "s5-costunits", "s5-costunits-sub", "s5-net", "s5-net-sub",
+    "s6-best", "s6-best-sub",
+    "s7-power", "s7-power-sub", "s7-mde", "s7-needed", "s7-needed-sub", "s7-compare",
     "derived-rr", "derived-priorbeats", "derived-priordeaths",
     "derived-deff", "derived-neff", "derived-spread", "derived-deaths",
-    "derived-rstar", "derived-clearsbar", "derived-decidenow",
-    "plot-cost-note",
+    "plot-net-note", "plot-marginal-note",
   ]) doc.add(makeElement("div", id));
 
-  doc.add(makeElement("table", "sweep-table"));
-  for (const id of ["plot-power", "plot-belief", "plot-cost"]) doc.add(makeCanvas(id));
+  for (const id of ["outcomes-table", "sweep-table"]) doc.add(makeElement("table", id));
+  for (const id of ["plot-belief", "plot-marginal", "plot-net"]) doc.add(makeCanvas(id));
 
   return doc;
 }

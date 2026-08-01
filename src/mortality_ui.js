@@ -1,5 +1,8 @@
 // Form ⇄ state ⇄ URL and results rendering for the mortality page.
 // Mirrors src/ui.js conventions; kept separate so the two tools stay decoupled.
+//
+// The results column is a numbered, auditable pipeline (steps ①–⑦); every
+// renderer here fills one step's ids. See mortality.html for the structure.
 
 export const MORTALITY_FIELDS = [
   // What effect do you expect? (percent units in the UI)
@@ -10,10 +13,10 @@ export const MORTALITY_FIELDS = [
   "cT", "cC", "m", "years", "icc",
   // Costs
   "fixedCost", "costPerCluster", "costPerChild",
-  // The decision this study informs
-  "grantSize", "bar", "ceBest",
-  // What counts as an answer?
-  "alpha", "targetPower", "thresholdR", "gamma",
+  // The funding decision the study informs
+  "grantSize", "bar", "ceBest", "ceAlt", "gd",
+  // Statistical conventions (frequentist sense-check only)
+  "alpha", "targetPower",
 ];
 
 export const MORTALITY_DEFAULTS = {
@@ -21,8 +24,8 @@ export const MORTALITY_DEFAULTS = {
   rateC: 25, rateT: 25,
   cT: 55, cC: 55, m: 1000, years: 1, icc: 0.001,
   fixedCost: 500000, costPerCluster: 5000, costPerChild: 10,
-  grantSize: 25000000, bar: 4, ceBest: 6,
-  alpha: 0.05, targetPower: 80, thresholdR: 5, gamma: 90,
+  grantSize: 25000000, bar: 4, ceBest: 6, ceAlt: 4, gd: 0.003355,
+  alpha: 0.05, targetPower: 80,
 };
 
 export function readMortalityForm() {
@@ -53,10 +56,8 @@ export function toModelParams(p) {
     cT: Math.round(p.cT), cC: Math.round(p.cC), m: Math.round(p.m), icc: p.icc,
     alpha: p.alpha,
     targetPower: p.targetPower / 100,
-    thresholdR: p.thresholdR / 100,
-    gamma: p.gamma / 100,
     fixedCost: p.fixedCost, costPerCluster: p.costPerCluster, costPerChild: p.costPerChild,
-    grantSize: p.grantSize, bar: p.bar, ceBest: p.ceBest,
+    grantSize: p.grantSize, bar: p.bar, ceBest: p.ceBest, ceAlt: p.ceAlt, gd: p.gd,
   };
 }
 
@@ -80,13 +81,13 @@ export function validateMortalityParams(mp) {
   if (!(mp.icc >= 0 && mp.icc < 1)) errs.push("ICC must be at least 0 and below 1.");
   if (!(mp.alpha > 0 && mp.alpha < 0.5)) errs.push("The false-alarm rate must be between 0 and 0.5.");
   if (!(mp.targetPower > 0.5 && mp.targetPower < 1)) errs.push("Target power must be between 50% and 100%.");
-  if (!(mp.gamma > 0.5 && mp.gamma < 1)) errs.push("The confidence needed to conclude must be between 50% and 100%.");
-  if (!(mp.thresholdR < mp.priorHiR))
-    errs.push("Your 'smallest reduction that matters' sits above your whole prior — you could never conclude benefit.");
   if (!(mp.grantSize >= 0)) errs.push("The funding at stake cannot be negative.");
-  if (mp.grantSize > 0 && !(mp.bar > 0)) errs.push("The bar must be above 0×.");
-  if (mp.grantSize > 0 && !(mp.ceBest > 0))
-    errs.push("Cost-effectiveness at your best guess must be above 0×.");
+  if (mp.grantSize > 0) {
+    if (!(mp.bar > 0)) errs.push("The bar must be above 0×.");
+    if (!(mp.ceBest > 0)) errs.push("Cost-effectiveness at your best guess must be above 0×.");
+    if (!(mp.ceAlt > 0)) errs.push("The next-best use's cost-effectiveness must be above 0×.");
+    if (!(mp.gd > 0)) errs.push("Units of value per $ must be above 0.");
+  }
   return errs;
 }
 
@@ -115,7 +116,18 @@ export function mortalityQueryToParams() {
 
 export function fmtPct(x, digits = 0) {
   if (x == null || !Number.isFinite(x)) return "—";
-  return `${(x * 100).toFixed(digits)}%`;
+  const v = (Math.abs(x) * 100).toFixed(digits);
+  return `${x < 0 && parseFloat(v) !== 0 ? "\u2212" : ""}${v}%`;
+}
+
+// Dollars with two decimals in the millions range — used wherever the figure
+// feeds arithmetic shown on screen, so the parts visibly reconcile.
+export function fmtMoneyPrecise(x) {
+  if (x == null || !Number.isFinite(x)) return "—";
+  const sign = x < 0 ? "\u2212" : "";
+  const a = Math.abs(x);
+  if (a >= 999.5e3) return `${sign}$${(a / 1e6).toFixed(2)}M`;
+  return fmtMoney(x);
 }
 
 export function fmtMoney(x) {
@@ -130,168 +142,281 @@ export function fmtMoney(x) {
   return `${sign}$${a.toFixed(0)}`;
 }
 
+// Units of value: whole numbers, thousands-separated, explicit sign when
+// asked (the outcomes table wants +/− to read as gains/losses).
+export function fmtUnits(x, { signed = false } = {}) {
+  if (x == null || !Number.isFinite(x)) return "—";
+  const a = Math.round(Math.abs(x));
+  if (a === 0) return "0"; // never render "−0" or "+0"
+  const sign = x < 0 ? "−" : signed ? "+" : "";
+  return `${sign}${a.toLocaleString()}`;
+}
+
 const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
 
 // ============================================================================
-// Results rendering
+// Results rendering — one function per pipeline step
 // ============================================================================
+
+const STEP_VALUE_IDS = [
+  "s1-fundval", "s1-altval", "s1-rstar", "s1-pclear", "s1-er", "s1-decide", "s1-evnow",
+  "derived-rstar", "derived-clearsbar", "derived-decidenow",
+  "s2-weight", "s2-belief", "s2-mislead",
+  "s4-withstudy", "s4-today", "s4-voi",
+  "s5-cost", "s5-costunits", "s5-net",
+  "s6-best",
+  "s7-power", "s7-mde", "s7-needed",
+  "derived-rr", "derived-priorbeats", "derived-priordeaths",
+  "derived-deff", "derived-neff", "derived-spread", "derived-deaths",
+];
+const STEP_SUB_IDS = [
+  "s1-fundval-sub", "s1-altval-sub", "s2-belief-sub", "s4-voi-sub",
+  "s1-evnow-sub", "s5-cost-sub", "s5-costunits-sub", "s5-net-sub", "s6-best-sub",
+  "s7-power-sub", "s7-needed-sub",
+];
 
 // Blank everything on the results side so stale numbers never sit next to an
 // error banner.
 export function clearMortalityResults() {
-  for (const id of [
-    "res-power", "res-mde", "res-needed", "res-conclusive", "res-belief",
-    "res-weight", "res-cost",
-    "res-rightcall", "res-voinet", "res-optimal",
-    "cell-gr", "cell-gw", "cell-pr", "cell-pw",
-    "derived-rr", "derived-priorbeats", "derived-priordeaths",
-    "derived-deff", "derived-neff", "derived-spread", "derived-deaths",
-    "derived-rstar", "derived-clearsbar", "derived-decidenow",
-    // Dynamic sub-lines too, so stale parameter-dependent text never sits
-    // under a blanked value.
-    "res-power-sub", "res-needed-sub", "res-belief-sub", "res-cost-sub",
-    "res-rightcall-sub", "res-voinet-sub", "res-optimal-sub",
-  ]) set(id, "—");
+  for (const id of STEP_VALUE_IDS) set(id, "—");
+  for (const id of STEP_SUB_IDS) set(id, "—");
+  set("s7-compare", "—");
   const caveats = document.getElementById("caveats");
   if (caveats) { caveats.style.display = "none"; caveats.innerHTML = ""; }
-  const table = document.getElementById("sweep-table");
-  if (table) table.innerHTML = "";
+  for (const id of ["outcomes-table", "sweep-table"]) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = "";
+  }
 }
 
 // r: analyzeDesign() bundle. ui: raw form values (UI units).
 // opt: optimalStudySize() result, or null when the decision panel is off.
 export function setMortalityResults(r, ui, opt = null) {
-  // The classical view.
-  set("res-power", fmtPct(r.power));
-  set("res-power-sub", `chance of a significant result if the true effect is ${ui.priorMeanR}%; averaged over your whole prior it is ${fmtPct(r.assurance.any)}`);
-  set("res-mde", Number.isFinite(r.mde) ? `${(r.mde * 100).toFixed(0)}% reduction` : "not reachable");
-  set("res-needed", Number.isFinite(r.needed.cT) ? `${r.needed.cT} + ${r.needed.cC}` : "—");
-  set("res-needed-sub", `treatment + control clusters at your best-guess effect; you have ${ui.cT} + ${ui.cC}`);
-
-  // The Bayesian view.
-  set("res-conclusive", fmtPct(r.bayes.pConclusiveEither));
-  set("res-belief", `${fmtPct(r.bayes.expectedCI.lo)} to ${fmtPct(r.bayes.expectedCI.hi)}`);
-  set("res-belief-sub", `typical 95% range, ~${(r.bayes.expectedWidthR * 100).toFixed(0)} points wide (your prior today: ${(r.bayes.priorWidthR * 100).toFixed(0)} points)`);
-  set("res-weight", `${fmtPct(r.bayes.w)} data / ${fmtPct(1 - r.bayes.w)} prior`);
-
-  // Cost.
-  set("res-cost", fmtMoney(r.cost));
-  const clusters = ui.cT + ui.cC;
-  const childYears = clusters * ui.m * ui.years;
-  set("res-cost-sub",
-    `${fmtMoney(ui.fixedCost)} fixed + ${fmtMoney(ui.costPerCluster * clusters)} clusters + ` +
-    `${fmtMoney(ui.costPerChild * clusters * ui.m)} children (≈ ${fmtMoney(r.cost / childYears)} per child-year)`);
-
-  // The decision view. `opt` is the optimalStudySize() result (may be null).
   const dec = r.decision;
-  if (dec) {
-    set("res-rightcall", fmtPct(dec.pRightCall));
-    set("res-rightcall-sub",
-      `vs ${fmtPct(dec.pRightNow)} if you decided today with no study (today you would ${dec.grantNow ? "fund" : "pass"})`);
-    const net = dec.voi - r.cost;
-    set("res-voinet", fmtMoney(net));
-    set("res-voinet-sub",
-      `${fmtMoney(dec.voi)} of better-decision value − ${fmtMoney(r.cost)} study cost, measured against your ${ui.bar}× bar`);
-    if (opt && opt.atSweepEdge && opt.worthRunning) {
-      set("res-optimal", `${opt.cT}+ (search limit)`);
-      set("res-optimal-sub",
-        `net value is still rising at the tool's ${opt.cT}-cluster search cap — the true optimum may be larger`);
-    } else if (opt) {
-      set("res-optimal", opt.worthRunning ? `${opt.cT} + ${opt.cC}` : "none");
-      set("res-optimal-sub", opt.worthRunning
-        ? `clusters maximizing net value: ${fmtMoney(opt.net)} net at ${fmtMoney(opt.cost)} cost (you have ${ui.cT} + ${ui.cC})`
-        : "no study size pays for itself under these decision stakes");
-    } else {
-      set("res-optimal", "—");
-      set("res-optimal-sub", "optimal size unavailable");
-    }
-    set("cell-gr", fmtPct(dec.grantRight));
-    set("cell-gw", fmtPct(dec.grantWrong));
-    set("cell-pr", fmtPct(dec.passRight));
-    set("cell-pw", fmtPct(dec.passWrong));
-    set("derived-rstar", fmtPct(dec.rStar));
-    set("derived-clearsbar", fmtPct(dec.pTrueClears));
-    set("derived-decidenow", dec.grantNow ? "fund it" : "pass");
-  } else {
-    for (const id of ["res-rightcall", "res-voinet", "res-optimal",
-      "cell-gr", "cell-gw", "cell-pr", "cell-pw",
-      "derived-rstar", "derived-clearsbar", "derived-decidenow"]) set(id, "—");
-    set("res-rightcall-sub", ui.grantSize > 0
-      ? "needs a positive best-guess reduction (and a reachable bar)"
-      : "decision panel off — set the funding at stake above 0 to turn it on");
-    set("res-voinet-sub", "—");
-    set("res-optimal-sub", "—");
-  }
 
-  // Derived strips.
+  // Left-column derived strips (prior + design transparency).
   set("derived-rr", (1 - ui.priorMeanR / 100).toFixed(2));
-  set("derived-priorbeats", fmtPct(r.bayes.priorPBeatsThr));
+  set("derived-priorbeats", dec ? fmtPct(dec.pTrueClears) : "—");
   set("derived-priordeaths", `≈ ${Math.round(r.prior.equivalentDeaths).toLocaleString()} deaths`);
   set("derived-deff", r.design.deff.toFixed(2));
   set("derived-neff", `${Math.round(r.design.nEffT).toLocaleString()} / ${Math.round(r.design.nEffC).toLocaleString()}`);
   set("derived-spread", Number.isFinite(r.spreadC.k) ? `±${(r.spreadC.k * 100).toFixed(0)}%` : "—");
   set("derived-deaths", `${Math.round(r.deaths.rawT).toLocaleString()} / ${Math.round(r.deaths.rawC).toLocaleString()}`);
+
+  // Step ① — the funding decision today (and the card-5 mirror strip).
+  if (dec) {
+    set("s1-fundval", `${fmtUnits(dec.fundValueBestUnits)} units`);
+    set("s1-fundval-sub", `${fmtMoney(ui.grantSize)} × CE ${ui.ceBest}× × ${ui.gd} units/$`);
+    set("s1-altval", `${fmtUnits(dec.altValueUnits)} units`);
+    set("s1-altval-sub", `${fmtMoney(ui.grantSize)} × CE ${ui.ceAlt}× × ${ui.gd} units/$`);
+    set("s1-rstar", fmtPct(dec.rStar, 1));
+    set("s1-pclear", fmtPct(dec.pTrueClears));
+    set("s1-er", fmtPct(dec.meanR, 1));
+    set("s1-decide", dec.grantNow ? "fund it" : "pass");
+    set("s1-evnow", `${dec.evNowUnits > 0 ? "+" : ""}${fmtUnits(dec.evNowUnits)} units`);
+    set("s1-evnow-sub", dec.grantNow
+      ? `= value of funding at your prior's average reduction (${fmtPct(dec.meanR, 1)}) minus the value of passing; the study must improve on this`
+      : `passing is worth more in expectation today; the study must improve on 0`);
+    set("derived-rstar", fmtPct(dec.rStar, 1));
+    set("derived-clearsbar", fmtPct(dec.pTrueClears));
+    set("derived-decidenow", dec.grantNow ? "fund it" : "pass");
+  } else {
+    for (const id of ["s1-fundval", "s1-altval", "s1-rstar", "s1-pclear", "s1-er", "s1-decide", "s1-evnow",
+      "derived-rstar", "derived-clearsbar", "derived-decidenow"]) set(id, "—");
+    set("s1-fundval-sub", ui.grantSize > 0
+      ? "needs a positive best-guess reduction (and a reachable breakeven)"
+      : "value panel off — set the funding at stake above 0 to turn it on");
+    set("s1-altval-sub", "—");
+    set("s1-evnow-sub", "—");
+  }
+
+  // Step ② — what the study measures.
+  set("s2-weight", `${fmtPct(r.bayes.w)} data / ${fmtPct(1 - r.bayes.w)} prior`);
+  set("s2-belief", `${fmtPct(r.bayes.expectedCI.lo)} to ${fmtPct(r.bayes.expectedCI.hi)}`);
+  set("s2-belief-sub", `typical 95% range, ~${(r.bayes.expectedWidthR * 100).toFixed(0)} points wide (your prior today: ${(r.bayes.priorWidthR * 100).toFixed(0)} points)`);
+  set("s2-mislead", dec ? fmtPct(dec.grantWrong + dec.passWrong, 1) : "—");
+
+  // Step ③ — the outcomes table.
+  renderOutcomesTable(dec);
+
+  // Step ④ — gross value of the study.
+  if (dec) {
+    set("s4-withstudy", `${fmtUnits(dec.evStudyUnits)} units`);
+    set("s4-today", `${fmtUnits(dec.evNowUnits)} units`);
+    set("s4-voi", `${fmtUnits(dec.voiUnits)} units`);
+    set("s4-voi-sub", `the difference (rounding can shift the last digit); ≈ ${fmtMoney(dec.voiUnits / (ui.bar * ui.gd))} of bar-level grantmaking`);
+  } else {
+    for (const id of ["s4-withstudy", "s4-today", "s4-voi"]) set(id, "—");
+    set("s4-voi-sub", "needs the funding decision — set the funding at stake in card 5");
+  }
+
+  // Step ⑤ — cost in units, net.
+  const clusters = ui.cT + ui.cC;
+  const childYears = clusters * ui.m * ui.years;
+  set("s5-cost", fmtMoneyPrecise(r.cost));
+  set("s5-cost-sub",
+    `${fmtMoney(ui.fixedCost)} fixed + ${fmtMoney(ui.costPerCluster * clusters)} clusters + ` +
+    `${fmtMoney(ui.costPerChild * clusters * ui.m)} children (≈ ${fmtMoney(r.cost / childYears)} per child-year)`);
+  if (dec && r.costUnits != null) {
+    set("s5-costunits", `${fmtUnits(r.costUnits)} units`);
+    set("s5-costunits-sub", `${fmtMoneyPrecise(r.cost)} × ${ui.bar}× bar × ${ui.gd} units/$`);
+    const net = dec.voiUnits - r.costUnits;
+    set("s5-net", `${net > 0 ? "+" : ""}${fmtUnits(net)} units`);
+    // The study judged like a grant: units per dollar, as a cash multiple.
+    const multiple = r.costUnits > 0 ? (ui.bar * dec.voiUnits) / r.costUnits : Infinity;
+    set("s5-net-sub",
+      `step ④ minus the cost to the left; as a use of money, this study is ` +
+      `${Number.isFinite(multiple) ? `${multiple.toFixed(1)}× cash` : "free information"} — ` +
+      `${multiple >= ui.bar ? "clears" : "falls short of"} your ${ui.bar}× bar`);
+  } else {
+    set("s5-costunits", "—");
+    set("s5-costunits-sub", "—");
+    set("s5-net", "—");
+    set("s5-net-sub", "—");
+  }
+
+  // Step ⑥ — the best size.
+  if (opt && opt.atSweepEdge && opt.worthRunning) {
+    set("s6-best", `${opt.cT}+ (search limit)`);
+    set("s6-best-sub", `net value is still rising at the tool's ${opt.cT}-cluster search cap — the true optimum may be larger`);
+  } else if (opt) {
+    set("s6-best", opt.worthRunning ? `${opt.cT} + ${opt.cC}` : "none");
+    set("s6-best-sub", opt.worthRunning
+      ? `nets ${fmtUnits(opt.netUnits)} units at ${fmtMoney(opt.cost)}, ${opt.avgMultiple.toFixed(1)}× cash overall (you have ${ui.cT} + ${ui.cC}); past ${opt.cT} treatment clusters (controls at your ratio) the next data point drops below your ${ui.bar}× bar`
+      : `no study size clears your ${ui.bar}× bar — at these stakes, better information is worth less than any study costs; decide with what you know`);
+  } else {
+    set("s6-best", "—");
+    set("s6-best-sub", "needs the funding decision inputs (card 5)");
+  }
+
+  // Step ⑦ — frequentist sense-check.
+  set("s7-power", fmtPct(r.power));
+  set("s7-power-sub", `chance of a statistically significant result (two-sided alpha = ${ui.alpha}) if the truth equals your best guess; averaged over your whole prior instead: ${fmtPct(r.assurance.any)}`);
+  set("s7-mde", Number.isFinite(r.mde) ? `${(r.mde * 100).toFixed(0)}% reduction` : "not reachable");
+  set("s7-needed", Number.isFinite(r.needed.cT) ? `${r.needed.cT} + ${r.needed.cC}` : "—");
+  set("s7-needed-sub", `for ${ui.targetPower}% power at your best-guess effect; you have ${ui.cT} + ${ui.cC}`);
+  set("s7-compare", frequentistComparison(r, ui, opt));
 }
 
-// Headline banner: three power states per the UX spec, plus the decision
-// sentence when the decision panel is live.
+// Step ③: the four outcomes, each with probability and expected value effect.
+export function renderOutcomesTable(dec) {
+  const el = document.getElementById("outcomes-table");
+  if (!el) return;
+  if (!dec) {
+    el.innerHTML = `<tbody><tr><td colspan="4"><span class="note">Needs the funding decision — set the funding at stake in card 5.</span></td></tr></tbody>`;
+    return;
+  }
+  const c = dec.cells;
+  const row = (cls, label, p, units, note) =>
+    `<tr class="${cls}"><td>${label}</td><td>${fmtPct(p)}</td>` +
+    `<td>${units == null ? "0" : fmtUnits(units, { signed: true })}</td>` +
+    `<td><span class="note">${note}</span></td></tr>`;
+  // The on-screen audit line: the four pieces redistribute exactly the
+  // expected gain of funding today, kappa·(E[R] − R*).
+  const totalAtStake = dec.kappaUnits * (dec.meanR - dec.rStar);
+  el.innerHTML =
+    `<thead><tr><th>Outcome</th><th>Chance</th><th>Adds to expected value (units)</th><th></th></tr></thead><tbody>` +
+    row("right", "Fund — and be right", c.grantRight.p, c.grantRight.units,
+      "value won by funding a program that truly beats the alternative") +
+    row("wrong", "Fund — and be wrong (misled)", c.grantWrong.p, c.grantWrong.units,
+      "value destroyed: noise made a below-breakeven program look good") +
+    row("right", "Pass — and be right", c.passRight.p, null,
+      `dodges an expected ${fmtUnits(c.passRight.avoidedLossUnits)} units of losses vs. funding anyway`) +
+    row("wrong", "Pass — and be wrong (misled)", c.passWrong.p, null,
+      `leaves an expected ${fmtUnits(c.passWrong.forgoneUnits)} units unclaimed`) +
+    `<tr class="total"><td>Deciding with the study</td><td>100%</td>` +
+    `<td>${fmtUnits(dec.evStudyUnits, { signed: true })}</td>` +
+    `<td><span class="note">vs. ${fmtUnits(dec.evNowUnits, { signed: true })} deciding today — the difference is the study's value (step ④)</span></td></tr>` +
+    `<tr><td colspan="4"><span class="note">Unit figures are probability-weighted, so they can be audited by addition: ` +
+    `${fmtUnits(c.grantRight.units, { signed: true })} ${fmtUnits(c.grantWrong.units, { signed: true })} ` +
+    `+${fmtUnits(c.passWrong.forgoneUnits)} −${fmtUnits(c.passRight.avoidedLossUnits)} = ` +
+    `${fmtUnits(totalAtStake, { signed: true })} units — exactly the expected gain of funding today, ` +
+    `redistributed by what the study reveals. Pass rows add 0 because passing sends the money to the next-best use; ` +
+    `their notes show what that choice dodged or left unclaimed.</span></td></tr>` +
+    `</tbody>`;
+}
+
+// Step ⑦'s closing comparison sentence.
+export function frequentistComparison(r, ui, opt) {
+  if (!opt || !r.decision) {
+    return "Turn on the funding-decision inputs (card 5) to compare the value-optimal size against this conventional recommendation.";
+  }
+  const needed = r.needed.cT;
+  const interrogate = " If the direction of the gap surprises you, interrogate the prior range (card 1) and the cost-effectiveness numbers (card 5) — they are the only inputs the value lens uses that the conventional calculation ignores; a gap that survives that check is a real feature of your decision, not a bug.";
+  if (!opt.worthRunning) {
+    const conventional = Number.isFinite(needed)
+      ? `a conventional calculation would still prescribe ${needed} + ${r.needed.cC} clusters for ${ui.targetPower}% power, but`
+      : `no conventional design even reaches ${ui.targetPower}% power here, and`;
+    return `The two lenses disagree here, instructively: ${conventional} with ${fmtMoney(ui.grantSize)} riding on the call, no study size pays for itself — better information is worth less than any study costs at these stakes.` + interrogate;
+  }
+  if (!Number.isFinite(needed)) {
+    return `No design reaches ${ui.targetPower}% power, yet the value calculation still finds a worthwhile study at ${opt.cT} + ${opt.cC} clusters — decision value does not require journal-grade certainty.` + interrogate;
+  }
+  const ratio = opt.cT / needed;
+  if (ratio < 0.85) {
+    return `Sense-check: the conventional ${ui.targetPower}%-power design is ${needed} + ${r.needed.cC} clusters; the value-optimal design is smaller (${opt.cT} + ${opt.cC}). That is not a contradiction — with ${fmtMoney(ui.grantSize)} at stake and a prior already leaning ${r.decision.grantNow ? "fund" : "pass"}, the last increments of statistical certainty cost more than the decision improvements they buy.` + interrogate;
+  }
+  if (ratio > 1.15) {
+    return `Sense-check: the value-optimal design (${opt.cT} + ${opt.cC} clusters) is larger than the conventional ${ui.targetPower}%-power design (${needed} + ${r.needed.cC}). With ${fmtMoney(ui.grantSize)} at stake, the decision justifies more certainty than the ${ui.targetPower}% convention asks for.` + interrogate;
+  }
+  return `Sense-check: the value-optimal design (${opt.cT} + ${opt.cC} clusters) lands close to the conventional ${ui.targetPower}%-power design (${needed} + ${r.needed.cC}) — the two lenses agree on the scale this study needs.`;
+}
+
+// Headline banner.
 export function setMortalityRecommendation(r, ui, opt = null) {
   const el = document.getElementById("recommendation");
   if (!el) return;
-  const target = ui.targetPower / 100;
-  const concl = r.bayes.pConclusiveEither;
-  const childYears = (ui.cT + ui.cC) * ui.m * ui.years;
+  const dec = r.decision;
 
+  if (!dec) {
+    el.className = "recommendation";
+    el.innerHTML = ui.grantSize > 0
+      ? `<strong>The value calculation is switched off — see the warning above.</strong> ` +
+        `It needs a positive best-guess reduction (card 1) and a breakeven below 100% ` +
+        `(the two cost-effectiveness inputs in card 5). Steps ② and ⑦ below still work.`
+      : `<strong>Set the funding decision (card 5) to price this study.</strong> ` +
+        `Without it the page still shows what the study would measure (step ②) and the ` +
+        `frequentist sense-check (step ⑦), but the value calculation needs to know what is at stake.`;
+    return;
+  }
+
+  const net = r.costUnits != null ? dec.voiUnits - r.costUnits : null;
   let cls, html;
-  if (r.power >= target) {
+  if (opt && !opt.worthRunning) {
+    cls = "recommendation warn";
+    html =
+      `<strong>Don't run this study — decide now.</strong> ` +
+      `With ${fmtMoney(ui.grantSize)} at stake, better information is worth less than any study costs: ` +
+      `the closest any size comes is ${fmtUnits(opt.voiUnits)} units bought for ${fmtUnits(opt.costUnits)} units of cost ` +
+      `(${Number.isFinite(opt.avgMultiple) ? (opt.avgMultiple < 0.1 ? "under 0.1" : opt.avgMultiple.toFixed(1)) : "—"}× cash against your ${ui.bar}× hurdle). ` +
+      `Deciding today (${dec.grantNow ? "fund" : "pass"}) is expected to be right ${fmtPct(dec.pRightNow)} of the time.`;
+  } else if (opt && opt.atSweepEdge) {
     cls = "recommendation good";
     html =
-      `<strong>This design is adequately powered.</strong> ` +
-      `If the program really cuts deaths by your best guess of ${ui.priorMeanR}%, a study with ` +
-      `${ui.cT}+${ui.cC} clusters (${childYears.toLocaleString()} child-years) has a ` +
-      `<strong>${fmtPct(r.power)} chance</strong> of a statistically significant result — and a ` +
-      `<strong>${fmtPct(concl)} chance</strong> of settling the funding question by your own standard ` +
-      `(${ui.gamma}% sure either way about the ${ui.thresholdR}% line). Expected cost: <strong>${fmtMoney(r.cost)}</strong>.`;
-  } else if (r.power >= 0.5) {
-    cls = "recommendation warn";
+      `<strong>Run a large study — the bigger the better within this tool's range.</strong> ` +
+      `Net value is still rising at ${opt.cT} clusters per arm ` +
+      `(+${fmtUnits(opt.netUnits)} units, ${fmtMoney(opt.cost)}). With ${fmtMoney(ui.grantSize)} at stake, ` +
+      `more certainty keeps paying for itself past the tool's search limit.`;
+  } else if (opt) {
+    const atCurrent = net != null && net > 0
+      ? `Your current ${ui.cT} + ${ui.cC} design also pays its way (+${fmtUnits(net)} units net).`
+      : `Your current ${ui.cT} + ${ui.cC} design does NOT pay its way (${fmtUnits(net, { signed: true })} units net) — resize it.`;
+    cls = "recommendation good";
     html =
-      `<strong>This design is close, but short of the bar.</strong> ` +
-      `At your best-guess effect of ${ui.priorMeanR}%, the chance of a significant result is ` +
-      `<strong>${fmtPct(r.power)}</strong> against your ${ui.targetPower}% target. You would need about ` +
-      `<strong>${Number.isFinite(r.needed.cT) ? `${r.needed.cT} + ${r.needed.cC} clusters` : "more clusters than is realistic"}</strong>` +
-      ` (you have ${ui.cT} + ${ui.cC}) to reach it. The table below shows what more clusters buy and cost. ` +
-      `Chance of a conclusive answer as designed: ${fmtPct(concl)}. Cost: ${fmtMoney(r.cost)}.`;
+      `<strong>Run a study of about ${opt.cT} + ${opt.cC} clusters (${fmtMoney(opt.cost)}).</strong> ` +
+      `It buys ${fmtUnits(opt.voiUnits)} units of better funding decisions for ${fmtUnits(opt.costUnits)} units of cost — ` +
+      `<strong>+${fmtUnits(opt.netUnits)} units net</strong>; as a use of money, the study itself is ` +
+      `${opt.avgMultiple.toFixed(1)}× cash (≈ ${fmtMoney(opt.netUnits / (ui.bar * ui.gd))} of bar-level grantmaking, net). ` +
+      `Past ${opt.cT} treatment clusters, the next data point drops below your ${ui.bar}× bar. ${atCurrent}`;
   } else {
-    cls = "recommendation warn";
-    html =
-      `<strong>This design is more likely to miss a real effect than find one.</strong> ` +
-      `Even if the program truly cuts deaths by ${ui.priorMeanR}%, this study would come back without a ` +
-      `significant result ${fmtPct(1 - r.power)} of the time. Its reliable-detection floor is ` +
-      `<strong>${Number.isFinite(r.mde) ? fmtPct(r.mde) : "beyond any plausible effect"}</strong>. ` +
-      `Consider more clusters (about ${Number.isFinite(r.needed.cT) ? `${r.needed.cT} + ${r.needed.cC}` : "—"} for ` +
-      `${ui.targetPower}% power), longer follow-up, or accepting that this study can only detect large effects. ` +
-      `Cost as designed: ${fmtMoney(r.cost)}.`;
+    cls = "recommendation";
+    html = `<strong>Value analysis unavailable.</strong> Check the funding-decision inputs.`;
   }
-
-  if (r.decision) {
-    const net = r.decision.voi - r.cost;
-    html += ` <strong>Decision math:</strong> with ${fmtMoney(ui.grantSize)} riding on the call, ` +
-      `this study is worth ${fmtMoney(r.decision.voi)} in better decisions — ` +
-      `${net >= 0 ? `${fmtMoney(net)} more than it costs` : `${fmtMoney(-net)} less than it costs`}.`;
-    if (opt && opt.atSweepEdge && opt.worthRunning) {
-      html += ` Net value is still rising at the tool's ${opt.cT}-cluster search limit — bigger may be better still.`;
-    } else if (opt && opt.worthRunning && Math.abs(opt.cT - ui.cT) > 2) {
-      html += ` The value-maximizing size is about ${opt.cT} + ${opt.cC} clusters (${fmtMoney(opt.net)} net).`;
-    } else if (opt && !opt.worthRunning) {
-      html += ` No size pays for itself — by your own numbers the call is already clear enough to make without a study.`;
-    }
-  }
-
   el.className = cls;
   el.innerHTML = html;
 }
 
-// Conditional amber caveats (shown only when triggered — see UX spec).
+// Conditional amber caveats (shown only when triggered).
 export function setMortalityCaveats(r, ui) {
   const el = document.getElementById("caveats");
   if (!el) return;
@@ -308,29 +433,22 @@ export function setMortalityCaveats(r, ui) {
     msgs.push("You have set different baseline mortality in the two arms. The tool treats that gap as pre-existing, not as a program effect — make sure that is what you mean.");
   if (r.caveats.includes("highK"))
     msgs.push("Your ICC implies cluster death rates varying by more than ±50% of their mean — rare in practice. Double-check the ICC.");
-  if (r.caveats.includes("priorSettled"))
-    msgs.push(`By your own standard, this question is already ${fmtPct(Math.max(r.bayes.priorPBeatsThr, 1 - r.bayes.priorPBeatsThr))} settled before any data. A study can mostly only confirm what you believe — consider whether it is worth ${fmtMoney(r.cost)}, or set a stricter threshold.`);
   if (r.caveats.includes("mdeUnreachable"))
-    msgs.push("No reduction — not even 100% — reaches your target power with this design. The minimum-detectable-effect card shows “not reachable” for that reason.");
+    msgs.push("No reduction — not even 100% — reaches your target power with this design. The minimum-detectable-effect line in step ⑦ shows “not reachable” for that reason.");
   if (r.caveats.includes("decisionNeedsBenefit"))
-    msgs.push("The decision panel needs a positive best-guess reduction: cost-effectiveness is anchored at your best guess, so a zero-or-harm central estimate leaves the grant math undefined. The rest of the page still works.");
+    msgs.push("The value calculation needs a positive best-guess reduction: cost-effectiveness is anchored at your best guess, so a zero-or-harm central estimate leaves the funding math undefined. Steps ② and ⑦ still work.");
   if (r.caveats.includes("barUnreachable"))
-    msgs.push("At these numbers the program cannot clear your bar even if the true reduction were 100% — the breakeven reduction sits at or above 100%. Check the bar and the cost-effectiveness at your best guess.");
+    msgs.push("At these numbers the program cannot beat the next-best use of the money even at a 100% reduction — the breakeven sits at or above 100%. Check the two cost-effectiveness inputs in card 5.");
 
   if (msgs.length === 0) { el.style.display = "none"; el.innerHTML = ""; return; }
   el.style.display = "block";
   el.innerHTML = msgs.map((m) => `<div class="caveat">⚠ ${m}</div>`).join("");
 }
 
-// Design-sweep table. rows from designSweep(); marks the current design and
-// the clusters-for-target-power design; tints the first row meeting target.
+// Step ⑥'s design-sweep table.
 export function renderSweepTable(rows, { currentCT, neededCT, targetPower, optimalCT = null }) {
   const el = document.getElementById("sweep-table");
   if (!el) return;
-  let firstHit = null;
-  for (const row of rows) {
-    if (row.power >= targetPower) { firstHit = row.cT; break; }
-  }
   const hasNet = rows.some((row) => row.net != null);
   if (hasNet && optimalCT == null) {
     optimalCT = rows.reduce((a, b) => (b.net > a.net ? b : a)).cT;
@@ -338,31 +456,30 @@ export function renderSweepTable(rows, { currentCT, neededCT, targetPower, optim
   const tr = rows.map((row) => {
     const tags = [];
     if (row.cT === currentCT) tags.push("← your design");
-    if (row.cT === neededCT && neededCT !== currentCT) tags.push(`← ${Math.round(targetPower * 100)}% power`);
     if (row.cT === optimalCT && row.net > 0) tags.push("← best value");
+    if (row.cT === neededCT && neededCT !== currentCT) tags.push(`← ${Math.round(targetPower * 100)}% power`);
     const cls = [];
     if (row.cT === currentCT) cls.push("current-row");
-    if (row.cT === firstHit) cls.push("hit-target");
+    if (row.cT === optimalCT && row.net > 0) cls.push("hit-target");
     return `<tr${cls.length ? ` class="${cls.join(" ")}"` : ""}>` +
       `<td>${row.cT} + ${row.cC}${tags.length ? ` <em>${tags.join(" ")}</em>` : ""}</td>` +
       `<td>${row.children.toLocaleString()}</td>` +
-      `<td>${fmtPct(row.power)}</td>` +
-      `<td>${fmtPct(row.pConclusive)}</td>` +
-      `<td>${(row.expectedWidthR * 100).toFixed(0)} pts</td>` +
       `<td>${fmtMoney(row.cost)}</td>` +
-      (hasNet ? `<td>${row.net != null ? fmtMoney(row.net) : "—"}</td>` : "") +
+      `<td>${fmtPct(row.power)}</td>` +
+      (hasNet
+        ? `<td>${row.voiUnits != null ? fmtUnits(row.voiUnits) : "—"}</td>` +
+          `<td>${row.net != null ? fmtUnits(row.net, { signed: true }) : "—"}</td>`
+        : "") +
       `</tr>`;
   }).join("");
   el.innerHTML =
-    `<thead><tr><th>Clusters (T + C)</th><th>Children</th><th>Power</th>` +
-    `<th>Chance conclusive</th><th>95% range width</th><th>Cost</th>` +
-    (hasNet ? `<th>Net value</th>` : "") +
+    `<thead><tr><th>Clusters (T + C)</th><th>Children</th><th>Cost</th><th>Power</th>` +
+    (hasNet ? `<th>Study value (units)</th><th>Net (units)</th>` : "") +
     `</tr></thead><tbody>${tr}</tbody>`;
 }
 
 // The cluster ladder for the sweep table: fixed rungs + the current design,
-// the clusters-needed design, and the value-optimal design. 8 fixed rungs +
-// 3 injected anchors keep the table at 11 rows or fewer.
+// the clusters-needed design, and the value-optimal design.
 export function sweepLadder(currentCT, neededCT, optimalCT = NaN) {
   const rungs = new Set([10, 20, 30, 40, 50, 60, 80, 100]);
   rungs.add(currentCT);
