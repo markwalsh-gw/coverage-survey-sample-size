@@ -107,6 +107,39 @@ export function makeWindow({ search = "" } = {}) {
   };
 }
 
+// Every element id the mortality page expects (mirrors mortality.html), with
+// the same starting values mortality.html ships.
+export function buildMortalityDom() {
+  const doc = makeDocument();
+
+  const inputDefaults = {
+    priorMeanR: "15", priorLoR: "-5", priorHiR: "30",
+    rateC: "25", rateT: "25",
+    cT: "55", cC: "55", m: "1000", years: "1", icc: "0.001",
+    fixedCost: "500000", costPerCluster: "5000", costPerChild: "10",
+    alpha: "0.05", targetPower: "80", thresholdR: "5", gamma: "90",
+  };
+  for (const [id, value] of Object.entries(inputDefaults)) {
+    const el = makeElement("input", id);
+    el.value = value;
+    doc.add(el);
+  }
+
+  for (const id of [
+    "error", "caveats", "recommendation",
+    "res-power", "res-power-sub", "res-mde", "res-needed", "res-needed-sub",
+    "res-conclusive", "res-belief", "res-belief-sub", "res-weight",
+    "res-cost", "res-cost-sub",
+    "derived-rr", "derived-priorbeats", "derived-priordeaths",
+    "derived-deff", "derived-neff", "derived-spread", "derived-deaths",
+  ]) doc.add(makeElement("div", id));
+
+  doc.add(makeElement("table", "sweep-table"));
+  for (const id of ["plot-power", "plot-belief", "plot-cost"]) doc.add(makeCanvas(id));
+
+  return doc;
+}
+
 // Every element id the app expects to find (mirrors index.html), with the
 // same starting values index.html ships. Histogram bin inputs (bin-0…bin-19)
 // are NOT included — main.js builds those itself via buildHistogramGrid();

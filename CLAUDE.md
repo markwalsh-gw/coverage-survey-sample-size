@@ -100,6 +100,19 @@ BayesianPowerCalc/
 
 ---
 
+## Second tool: mortality study power calculator (August 2026)
+
+`mortality.html` + `src/mortality.js` / `src/mortality_ui.js` / `src/mortality_main.js`: frequentist power
+and Bayesian precision/conclusiveness for cluster-randomized all-cause mortality studies. Fully
+closed-form (no Monte Carlo in the page). Method: `docs/mortality_method.md`. Design decisions:
+risk = rate/1,000 × follow-up years; DEFF = 1+(m−1)ρ; classical panel on the risk-difference scale
+(Donner & Klar / Hayes–Bennett cross-check), Bayesian panel is conjugate Normal–Normal on log(RR);
+"conclusive" = posterior ≥γ sure the reduction beats a user threshold, with a mandatory
+"prior already settles it" banner. Numbers verified against two independent Python implementations
+(closed-form + 500k MC) built by design-phase agents; regressions pinned in `tests/mortality.test.js`,
+page integration in `tests/mortality.app.test.js` (DOM stub extended with `buildMortalityDom`).
+The coverage tool (`index.html`) is untouched apart from one header cross-link.
+
 ## Key People
 
 | Name | Role | Context |

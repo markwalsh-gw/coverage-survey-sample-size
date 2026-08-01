@@ -1,0 +1,382 @@
+// Cluster-randomized all-cause mortality: frequentist power + Bayesian
+// precision/conclusiveness. All closed-form — no Monte Carlo, no RNG.
+// Pure ES module — runs in the browser, under `node --test`, and under jsc.
+//
+// Model summary
+// -------------
+// Outcome: death during follow-up. Baselines are entered as all-cause
+//   mortality RATES (deaths per 1,000 child-years); with follow-up of
+//   `years` per child the study-window risk is p = rate/1000 · years.
+//   p_c  = control-arm risk;  p_t0 = treatment-arm risk if the program has
+//   ZERO effect (usually = p_c). A relative reduction R (fraction, benefit
+//   positive, harm negative) acts multiplicatively: p_t = p_t0 · (1 − R).
+// Design: cT treatment clusters, cC control clusters, m children per
+//   cluster, ICC rho. DEFF = 1 + (m−1)·rho; n_eff = c·m / DEFF per arm.
+// Frequentist: two-sided unpooled z-test on the risk difference (both
+//   rejection tails counted, so R = 0 returns exactly alpha).
+// Bayesian: Normal prior on theta = log risk ratio fitted from a best guess
+//   + 95% CI on the reduction; Normal likelihood for the observed log risk
+//   ratio (delta method, se fixed at the prior-mean effect); conjugate
+//   Normal–Normal update, so every preposterior quantity is closed-form.
+//
+// Verified against two independent Python implementations (closed-form and
+// 500k-draw Monte Carlo) — see docs/mortality_method.md and
+// tests/mortality.test.js benchmarks.
+
+import { normalCdf } from "./math.js";
+
+// ============================================================================
+// Normal quantile (Acklam's rational approximation, |rel err| < 1.2e-9).
+// Kept here rather than in math.js so the verified core stays untouched.
+// ============================================================================
+const ACKLAM_A = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+  1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+const ACKLAM_B = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+  6.680131188771972e+01, -1.328068155288572e+01];
+const ACKLAM_C = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+  -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+const ACKLAM_D = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+  3.754408661907416e+00];
+
+export function normQuantile(p) {
+  if (!(p > 0 && p < 1)) {
+    if (p === 0) return -Infinity;
+    if (p === 1) return Infinity;
+    throw new Error("normQuantile: p must be in (0,1)");
+  }
+  const pLow = 0.02425, pHigh = 1 - pLow;
+  let q, r, x;
+  if (p < pLow) {
+    q = Math.sqrt(-2 * Math.log(p));
+    x = (((((ACKLAM_C[0] * q + ACKLAM_C[1]) * q + ACKLAM_C[2]) * q + ACKLAM_C[3]) * q + ACKLAM_C[4]) * q + ACKLAM_C[5]) /
+        ((((ACKLAM_D[0] * q + ACKLAM_D[1]) * q + ACKLAM_D[2]) * q + ACKLAM_D[3]) * q + 1);
+  } else if (p <= pHigh) {
+    q = p - 0.5;
+    r = q * q;
+    x = (((((ACKLAM_A[0] * r + ACKLAM_A[1]) * r + ACKLAM_A[2]) * r + ACKLAM_A[3]) * r + ACKLAM_A[4]) * r + ACKLAM_A[5]) * q /
+        (((((ACKLAM_B[0] * r + ACKLAM_B[1]) * r + ACKLAM_B[2]) * r + ACKLAM_B[3]) * r + ACKLAM_B[4]) * r + 1);
+  } else {
+    q = Math.sqrt(-2 * Math.log(1 - p));
+    x = -(((((ACKLAM_C[0] * q + ACKLAM_C[1]) * q + ACKLAM_C[2]) * q + ACKLAM_C[3]) * q + ACKLAM_C[4]) * q + ACKLAM_C[5]) /
+         ((((ACKLAM_D[0] * q + ACKLAM_D[1]) * q + ACKLAM_D[2]) * q + ACKLAM_D[3]) * q + 1);
+  }
+  return x;
+}
+
+// ============================================================================
+// Design quantities
+// ============================================================================
+
+// Deaths per 1,000 child-years + follow-up years → risk over the window.
+// Linear in exposure — fine for the small risks mortality studies live in;
+// analyzeDesign validates the result stays inside (0, 1).
+export function riskFromRate(ratePer1000, years) {
+  return (ratePer1000 / 1000) * years;
+}
+
+export function designEffect(m, icc) {
+  if (!(m >= 1)) throw new Error("children per cluster must be ≥ 1");
+  if (!(icc >= 0 && icc < 1)) throw new Error("ICC must be in [0, 1)");
+  return 1 + (m - 1) * icc;
+}
+
+export function designSummary({ cT, cC, m, icc }) {
+  const deff = designEffect(m, icc);
+  return {
+    deff,
+    nEffT: (cT * m) / deff,
+    nEffC: (cC * m) / deff,
+    nT: cT * m,
+    nC: cC * m,
+  };
+}
+
+// Between-cluster spread implied by the ICC at risk p (per arm):
+//   sigma_b = sqrt(rho·p(1−p)) — SD of true cluster-level risks;
+//   k = sigma_b / p = sqrt(rho·(1−p)/p) — Hayes & Bennett's CV of cluster
+//   risks. Exact bridge for a binary outcome: rho = k²·p/(1−p).
+export function clusterSpread(icc, p) {
+  const sigmaB = Math.sqrt(Math.max(0, icc * p * (1 - p)));
+  return { sigmaB, k: p > 0 ? sigmaB / p : NaN };
+}
+
+// ============================================================================
+// Frequentist: two-sided unpooled z-test on the risk difference
+// ============================================================================
+
+function seDiff(pT, pC, nEffT, nEffC) {
+  return Math.sqrt((pT * (1 - pT)) / nEffT + (pC * (1 - pC)) / nEffC);
+}
+
+// Power to detect relative reduction R at two-sided level alpha. Both
+// rejection tails are counted, so R = 0 gives exactly alpha and harm
+// (R < 0) needs no special-casing.
+export function frequentistPower({ R, pT0, pC, nEffT, nEffC, alpha = 0.05 }) {
+  const pT = pT0 * (1 - R);
+  if (!(pT > 0 && pT < 1)) return NaN;
+  const se = seDiff(pT, pC, nEffT, nEffC);
+  const delta = pC - pT;
+  const z = normQuantile(1 - alpha / 2);
+  return normalCdf(-z + delta / se) + normalCdf(-z - delta / se);
+}
+
+// Minimum detectable relative reduction at the power target, by bisection on
+// the exact two-tailed power (agrees with the one-tailed closed-form quadratic
+// to ~5e-7 in R; bisection keeps the self-check `power(MDE) = target` exact).
+export function minimumDetectableReduction({ pT0, pC, nEffT, nEffC, alpha = 0.05, power = 0.8 }) {
+  const f = (R) => frequentistPower({ R, pT0, pC, nEffT, nEffC, alpha }) - power;
+  let lo = 1e-6, hi = 1 - 1e-9;
+  if (f(hi) < 0) return NaN; // unreachable even at total elimination
+  if (f(lo) > 0) {
+    // Only reachable with unequal baselines. When the treatment baseline is
+    // WORSE than control (pT0 > pC), power is non-monotone in R: near R = 0
+    // the test "detects" the baseline gap itself, power dips to exactly
+    // alpha where the two risks coincide (R = 1 − pC/pT0), then rises again.
+    // The meaningful MDE is the upward crossing beyond that dip.
+    const rEq = 1 - pC / pT0;
+    if (!(rEq > 0)) return lo; // treatment baseline ≤ control: MDE genuinely ~0
+    lo = rEq; // f(rEq) = alpha − power < 0, so [rEq, hi] brackets the crossing
+  }
+  for (let i = 0; i < 100; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (f(mid) < 0) lo = mid;
+    else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
+// Clusters needed for the power target at reduction R, holding m, icc and the
+// allocation ratio A = cC/cT fixed. Closed form: with cC = A·cT,
+//   SE² = (DEFF/(m·cT)) · [V_t + V_c/A], so
+//   cT = (z_{1−α/2} + z_{power})² · DEFF · (V_t + V_c/A) / (m·Δ²).
+// Returns ceil'd integers plus the power actually achieved at those counts.
+export function requiredClusters({ R, pT0, pC, m, icc, alpha = 0.05, power = 0.8, ratio = 1 }) {
+  const pT = pT0 * (1 - R);
+  const delta = pC - pT;
+  if (!(delta > 0)) return { cT: NaN, cC: NaN, cTExact: NaN, achievedPower: NaN };
+  const deff = designEffect(m, icc);
+  const K = normQuantile(1 - alpha / 2) + normQuantile(power);
+  const cTExact =
+    (K * K * deff * (pT * (1 - pT) + (pC * (1 - pC)) / ratio)) / (m * delta * delta);
+  const cT = Math.max(2, Math.ceil(cTExact - 1e-9));
+  const cC = Math.max(2, Math.ceil(ratio * cTExact - 1e-9));
+  const d = designSummary({ cT, cC, m, icc });
+  const achievedPower = frequentistPower({ R, pT0, pC, nEffT: d.nEffT, nEffC: d.nEffC, alpha });
+  return { cT, cC, cTExact, achievedPower };
+}
+
+// Hayes & Bennett (1999) clusters per (equal) arm, from the rho-implied k's —
+// a cross-check for EQUAL allocation only (do not compare against
+// requiredClusters.cT when cC ≠ cT). H&B's
+// implied design effect is 1 + m·rho (vs our exact 1 + (m−1)·rho) and they
+// add +1 cluster as a rough degrees-of-freedom correction, so it runs
+// slightly conservative.
+export function hayesBennettPerArm({ R, pT0, pC, m, icc, alpha = 0.05, power = 0.8 }) {
+  const pT = pT0 * (1 - R);
+  const delta = pC - pT;
+  if (!(delta > 0)) return NaN;
+  const K = normQuantile(1 - alpha / 2) + normQuantile(power);
+  const vT = pT * (1 - pT), vC = pC * (1 - pC);
+  // k_j² p_j² = rho · V_j for a binary outcome.
+  return 1 + (K * K * ((vT + vC) / m + icc * vT + icc * vC)) / (delta * delta);
+}
+
+// ============================================================================
+// Bayesian: Normal prior on theta = log risk ratio, Normal–Normal update
+// ============================================================================
+
+const R_CLAMP = 0.999; // reductions ≥ 100% imply zero mortality — impossible
+
+// Fit Normal(mu, tau²) on theta = log(1 − R) from a best-guess reduction and
+// 95% CI, all as FRACTIONS (0.15 = 15% reduction; negative = harm). The map
+// R → theta is strictly decreasing, so the CI endpoints flip. mu comes from
+// the best guess and tau from the CI width alone; if the user's CI is
+// asymmetric on the log scale, `impliedCI` (mu ± z·tau back-transformed) and
+// `asymmetry` (|log-scale midpoint − best guess|, in fraction-of-R units)
+// let the UI echo the distortion back.
+export function priorOnLogRR({ mean, lo, hi, level = 0.95 }) {
+  if (!(lo < mean && mean < hi)) throw new Error("require low < best guess < high");
+  const clamped = mean >= R_CLAMP || hi >= R_CLAMP || lo >= R_CLAMP;
+  const c = (R) => Math.min(R, R_CLAMP);
+  const mu = Math.log(1 - c(mean));
+  const thetaLo = Math.log(1 - c(hi)); // note the flip
+  const thetaHi = Math.log(1 - c(lo));
+  const z = normQuantile(0.5 + level / 2);
+  const tau = Math.max((thetaHi - thetaLo) / (2 * z), 1e-6);
+  const fittedMid = 1 - Math.exp(0.5 * (thetaLo + thetaHi));
+  return {
+    mu, tau, clamped,
+    impliedCI: { lo: 1 - Math.exp(mu + z * tau), hi: 1 - Math.exp(mu - z * tau) },
+    asymmetry: Math.abs(fittedMid - c(mean)),
+    // Prior precision in data terms: a balanced two-arm study observing D
+    // total deaths has se² ≈ 4/D on the log risk ratio, so the prior is
+    // worth about 4/tau² observed deaths.
+    equivalentDeaths: 4 / (tau * tau),
+  };
+}
+
+// Delta-method SE of the observed log risk ratio, evaluated at the
+// prior-mean effect (the design's central scenario; mildly conservative for
+// beneficial priors because fewer treatment deaths mean less information).
+export function seLogRR({ pT, pC, nEffT, nEffC }) {
+  return Math.sqrt((1 - pT) / (nEffT * pT) + (1 - pC) / (nEffC * pC));
+}
+
+// Every closed-form Bayesian output. prior: {mu, tau}; se from seLogRR;
+// thresholdR: the smallest reduction that matters (fraction); gamma: the
+// posterior confidence demanded before calling the question settled.
+export function bayesianSummary({ prior, se, thresholdR = 0, gamma = 0.9, level = 0.95 }) {
+  const { mu, tau } = prior;
+  const tau2 = tau * tau, se2 = se * se;
+  const w = tau2 / (tau2 + se2);              // weight the data gets
+  const postVar = (1 - w) * tau2;             // fixed before any data
+  const postSd = Math.sqrt(postVar);
+  const sigmaPm = Math.sqrt(w) * tau;         // preposterior sd of the posterior mean
+  const z = normQuantile(0.5 + level / 2);
+
+  // Credible-interval geometry on the reduction scale (fractions).
+  // Typical post-study interval, centred at the prior mean:
+  const expectedCI = { lo: 1 - Math.exp(mu + z * postSd), hi: 1 - Math.exp(mu - z * postSd) };
+  // Exact preposterior expectation of the post-study interval width
+  // (lognormal mean ⇒ the sigmaPm²/2 term), and today's interval width:
+  const expectedWidthR =
+    (Math.exp(z * postSd) - Math.exp(-z * postSd)) * Math.exp(mu + (sigmaPm * sigmaPm) / 2);
+  const priorWidthR = (Math.exp(z * tau) - Math.exp(-z * tau)) * Math.exp(mu);
+
+  // Conclusiveness. "Conclusive benefit" = posterior P(R > thresholdR) ≥ gamma
+  //   ⇔ postMean ≤ thetaT − z_g·postSd, and preposterior postMean ~ N(mu, sigmaPm²).
+  const thetaT = Math.log(1 - Math.min(thresholdR, R_CLAMP));
+  const zG = normQuantile(gamma);
+  const degenerate = sigmaPm < 1e-12; // no data weight: the prior alone decides
+  const pConclusiveBenefit = degenerate
+    ? (mu <= thetaT - zG * postSd ? 1 : 0)
+    : normalCdf((thetaT - zG * postSd - mu) / sigmaPm);
+  const pConclusiveNull = degenerate
+    ? (mu >= thetaT + zG * postSd ? 1 : 0)
+    : normalCdf((mu - thetaT - zG * postSd) / sigmaPm);
+  const pConclusiveEither = pConclusiveBenefit + pConclusiveNull;
+  const pInconclusive = Math.max(0, 1 - pConclusiveEither);
+
+  // Is the question already settled by the prior alone?
+  const priorPBeatsThr = normalCdf((thetaT - mu) / tau);
+  const priorConclusiveBenefit = priorPBeatsThr >= gamma;
+  const priorConclusiveNull = 1 - priorPBeatsThr >= gamma;
+
+  return {
+    w, postSd, sigmaPm,
+    widthTheta: 2 * z * postSd,
+    expectedCI, expectedWidthR, priorWidthR,
+    pConclusiveBenefit, pConclusiveNull, pConclusiveEither, pInconclusive,
+    priorPBeatsThr, priorConclusiveBenefit, priorConclusiveNull,
+  };
+}
+
+// Assurance = preposterior probability the two-sided z-test on the log risk
+// ratio comes back significant: theta_hat ~ N(mu, tau² + se²), significant
+// iff |theta_hat| > z_a·se.
+export function assurance({ prior, se, alpha = 0.05 }) {
+  const { mu, tau } = prior;
+  const zA = normQuantile(1 - alpha / 2);
+  const preSd = Math.sqrt(tau * tau + se * se);
+  const benefit = normalCdf((-zA * se - mu) / preSd);
+  const harm = normalCdf((mu - zA * se) / preSd);
+  return { benefit, harm, any: benefit + harm };
+}
+
+// ============================================================================
+// Costs, deaths, and the full result bundle
+// ============================================================================
+
+export function studyCost({ cT, cC, m, fixedCost, costPerCluster, costPerChild }) {
+  const clusters = cT + cC;
+  return fixedCost + costPerCluster * clusters + costPerChild * clusters * m;
+}
+
+// Deaths: raw = what the study will actually observe (the grantmaker-facing
+// number); effective = raw / DEFF (what the normal approximation runs on —
+// drives the few-deaths caveat).
+export function expectedDeaths({ R, pT0, pC, cT, cC, m, deff }) {
+  const rawT = pT0 * (1 - R) * cT * m;
+  const rawC = pC * cC * m;
+  return { rawT, rawC, effT: rawT / deff, effC: rawC / deff };
+}
+
+// One call computing every number the page shows, plus caveat flags.
+// Takes model units: prior as fractions, baselines as deaths per 1,000
+// child-years, follow-up in years, costs in dollars.
+export function analyzeDesign(params) {
+  const {
+    priorMeanR, priorLoR, priorHiR,
+    rateT, rateC, years,
+    cT, cC, m, icc,
+    alpha = 0.05, targetPower = 0.8,
+    thresholdR = 0, gamma = 0.9,
+    fixedCost = 0, costPerCluster = 0, costPerChild = 0,
+  } = params;
+
+  const pT0 = riskFromRate(rateT, years);
+  const pC = riskFromRate(rateC, years);
+  if (!(pT0 > 0 && pT0 < 1) || !(pC > 0 && pC < 1))
+    throw new Error("baseline mortality × follow-up must give a risk strictly between 0 and 1");
+  if (!(priorMeanR < 1))
+    throw new Error("a best-guess reduction of 100% or more implies zero mortality — keep it below 100%");
+
+  const design = designSummary({ cT, cC, m, icc });
+  const prior = priorOnLogRR({ mean: priorMeanR, lo: priorLoR, hi: priorHiR });
+  const pT = pT0 * Math.exp(prior.mu); // treatment risk at the prior-mean effect
+  if (!(pT > 0 && pT < 1))
+    throw new Error("at your prior's best guess, treatment-arm mortality would leave (0, 1000) per 1,000 — lower the harm end of the prior, the treatment baseline, or the follow-up");
+  const spreadT = clusterSpread(icc, pT);
+  const spreadC = clusterSpread(icc, pC);
+  const se = seLogRR({ pT, pC, nEffT: design.nEffT, nEffC: design.nEffC });
+
+  const power = frequentistPower({
+    R: priorMeanR, pT0, pC, nEffT: design.nEffT, nEffC: design.nEffC, alpha,
+  });
+  const mde = minimumDetectableReduction({
+    pT0, pC, nEffT: design.nEffT, nEffC: design.nEffC, alpha, power: targetPower,
+  });
+  const needed = requiredClusters({
+    R: priorMeanR, pT0, pC, m, icc, alpha, power: targetPower, ratio: cC / cT,
+  });
+  const hbPerArm = hayesBennettPerArm({
+    R: priorMeanR, pT0, pC, m, icc, alpha, power: targetPower,
+  });
+  const bayes = bayesianSummary({ prior, se, thresholdR, gamma });
+  const assur = assurance({ prior, se, alpha });
+  const cost = studyCost({ cT, cC, m, fixedCost, costPerCluster, costPerChild });
+  const deaths = expectedDeaths({ R: priorMeanR, pT0, pC, cT, cC, m, deff: design.deff });
+
+  const caveats = [];
+  if (Math.min(cT, cC) < 15) caveats.push("fewClusters");
+  if (Math.min(deaths.effT, deaths.effC) < 10) caveats.push("fewDeaths");
+  if (prior.clamped) caveats.push("priorClamped");
+  if (prior.asymmetry > 0.015) caveats.push("priorAsymmetric");
+  if (rateT !== rateC) caveats.push("unequalBaselines");
+  if (Math.max(spreadT.k, spreadC.k) > 0.5) caveats.push("highK");
+  if (bayes.priorConclusiveBenefit || bayes.priorConclusiveNull) caveats.push("priorSettled");
+  if (!Number.isFinite(mde)) caveats.push("mdeUnreachable");
+
+  return {
+    pT0, pC, pT, design, spreadT, spreadC, prior, se,
+    power, mde, needed, hbPerArm, bayes, assurance: assur, cost, deaths, caveats,
+  };
+}
+
+// Design sweep for the table and plots: vary treatment clusters over
+// `cTValues`, keeping the control:treatment ratio and everything else fixed.
+export function designSweep(params, cTValues) {
+  const ratio = params.cC / params.cT;
+  return cTValues.map((cT) => {
+    const cC = Math.max(2, Math.round(ratio * cT));
+    const r = analyzeDesign({ ...params, cT, cC });
+    return {
+      cT, cC,
+      children: (cT + cC) * params.m,
+      power: r.power,
+      pConclusive: r.bayes.pConclusiveEither,
+      expectedWidthR: r.bayes.expectedWidthR,
+      cost: r.cost,
+    };
+  });
+}
