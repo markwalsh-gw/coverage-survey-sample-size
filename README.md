@@ -2,6 +2,8 @@
 
 A small browser tool for picking the sample size of a single coverage survey (CMAM, nets, SMC, VAS, vaccinations, water, …) using a **Bayesian value-of-information** calculation: keep adding interviews until the marginal value drops below a target ROI hurdle.
 
+**Also in this repo:** [`mortality.html`](mortality.html) — a second tool for **cluster-randomized all-cause mortality studies**: frequentist power / minimum detectable effect / clusters needed, side by side with a Bayesian view (chance of a conclusive answer given your prior, expected posterior credible interval, data-vs-prior weight), plus costs and a design-sweep table. All closed-form, same zero-dependency stack. Method notes: [`docs/mortality_method.md`](docs/mortality_method.md).
+
 Adapted from the Bayesian VoI work IDinsight built for GiveWell's Nigeria CMAM coverage survey, simplified into a single page that any GiveWell staffer can open in a browser — no R, no Stan, no install.
 
 **New here?** Start with the [plain-language guide](docs/guide.md) — written for grantmakers, no statistics background assumed.
