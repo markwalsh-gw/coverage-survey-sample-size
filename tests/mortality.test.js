@@ -115,7 +115,7 @@ test("freq benchmark B2: unequal arms (20 vs 40 clusters)", () => {
 
 test("freq benchmark B3: rho=0 reduces to individual randomization", () => {
   const d = designSummary({ cT: 10, cC: 10, m: 2000, icc: 0 });
-  close(d.deff, 1, 0);
+  close(d.deff, 1, 1e-15); // exact, but close() uses strict <
   close(
     frequentistPower({ R: 0.30, pT0: 0.04, pC: 0.04, nEffT: d.nEffT, nEffC: d.nEffC }),
     0.9999984578,
